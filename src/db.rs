@@ -559,6 +559,25 @@ impl Db {
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
+    /// All activities with their category name, for the activity rail.
+    /// Order: the no-category group first, then categories; activities
+    /// within a group in name order.
+    pub fn activity_index(&self) -> Result<Vec<(String, Option<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.name, c.name
+             FROM activities a
+             LEFT JOIN categories c ON c.id = a.category_id
+             ORDER BY
+                 CASE WHEN c.id IS NULL THEN 0 ELSE 1 END,
+                 c.name COLLATE NOCASE,
+                 a.name COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
     /// Map of activity name (lowercase) to category name, for CLI grouping.
     pub fn category_map(&self) -> Result<Vec<(String, Option<String>)>> {
         let mut stmt = self.conn.prepare(

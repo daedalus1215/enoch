@@ -46,8 +46,11 @@ enoch tui                                             open the interactive panel
 
 Five modes, one key each — the status bar always shows the shortcuts:
 
-- **1 · LIVE** — running timers on top, per-activity totals below.
-  `t` cycles the period (today / this week / all-time).
+- **1 · LIVE** — the home screen. Left rail: every activity, running
+  ones marked with a dot. `j/k` selects, `enter` opens the selected
+  activity's history, `x` stops it (if running). Right side: running
+  timers on top, per-activity totals below; `t` cycles the period
+  (today / this week / all-time).
 - **2 · HISTORY** — a month grid; days with recorded time are marked.
   Pick a day to see its per-activity totals and individual sessions, and
   add, edit, or delete sessions from there. `y` opens the year view.
@@ -62,7 +65,7 @@ Five modes, one key each — the status bar always shows the shortcuts:
 ### Keys
 
 ```
-LIVE (1)      s start · x stop · a add · t period · j/k select
+LIVE (1)      s start · x stop · a add · t period · j/k rail · enter hist
 HISTORY (2)   j/k select · n/p day · h/l month · t today
               a add session · e edit times · d delete
               y year view (j/k month · h/l year · enter open)

@@ -402,7 +402,6 @@ struct State {
     totals: Vec<Total>,
     names: Vec<String>,
     period: Period,
-    selected: usize,
     prompt: Option<Prompt>,
     cat_names: Vec<String>,
     sess_sel: usize,
@@ -429,7 +428,6 @@ impl State {
             totals: Vec::new(),
             names: Vec::new(),
             period: Period::Today,
-            selected: 0,
             prompt: None,
             cat_names: Vec::new(),
             sess_sel: 0,
@@ -458,9 +456,7 @@ impl State {
         self.totals = db.totals(f, t, &Scope::All)?;
         self.names = db.names()?;
         self.cat_names = db.category_names().unwrap_or_default();
-        if self.selected >= self.running.len() {
-            self.selected = self.running.len().saturating_sub(1);
-        }
+        self.refresh_rail(db);
         Ok(())
     }
 
@@ -500,15 +496,6 @@ impl State {
         }
     }
 
-    fn move_sel(&mut self, d: isize) {
-        if self.running.is_empty() {
-            return;
-        }
-        self.selected = (self.selected as isize + d)
-            .clamp(0, (self.running.len() - 1) as isize)
-            as usize;
-    }
-
     /// Open the add-session prompt for day `d` (09:00 prefill).
     fn open_add_prompt(&mut self, d: NaiveDate) {
         self.hist.sel = d;
@@ -516,6 +503,41 @@ impl State {
         self.pending_start = d
             .and_hms_opt(9, 0, 0)
             .map(|t| t.and_utc().timestamp_millis());
+    }
+
+    /// Stop the activity under the rail selection, if it is running.
+    /// Returns true if something was stopped.
+    fn stop_selected(&mut self, db: &Db) -> bool {
+        let name = match self.activity.rows.get(self.activity.sel) {
+            Some(RailRow::Activity(n)) => n.clone(),
+            _ => {
+                self.msg = Some("select an activity to stop".to_string());
+                return false;
+            }
+        };
+        let running = match self
+            .running
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(&name))
+            .cloned()
+        {
+            Some(r) => r,
+            None => {
+                self.msg = Some(format!("not running: {name}"));
+                return false;
+            }
+        };
+        let dur = fmt_short(now_ms() - running.started_at);
+        match db.stop(std::slice::from_ref(&running.name)) {
+            Ok(_) => {
+                self.msg = Some(format!("stopped: {} ({dur})", running.name));
+                true
+            }
+            Err(e) => {
+                self.msg = Some(format!("error: {e:#}"));
+                false
+            }
+        }
     }
 
     fn handle_live_key(&mut self, db: &Db, k: &KeyEvent) {
@@ -540,31 +562,33 @@ impl State {
             }
             KeyCode::Char('5') => {
                 self.mode = Mode::Activity;
+                self.activity.focus_rail = true;
                 self.refresh_activity(db);
             }
             KeyCode::Char('s') => {
                 self.prompt = Some(Prompt::new(PromptKind::Start, String::new()));
             }
             KeyCode::Char('a') => self.open_add_prompt(Local::now().date_naive()),
+            KeyCode::Enter => {
+                self.mode = Mode::Activity;
+                self.activity.focus_rail = true;
+                self.refresh_activity(db);
+            },
             KeyCode::Char('t') => {
                 self.period = self.period.next();
                 self.try_tick(db);
             }
             KeyCode::Char('x') => {
-                if let Some(r) = self.running.get(self.selected).cloned() {
-                    let dur = fmt_short(now_ms() - r.started_at);
-                    if let Err(e) = db.stop(std::slice::from_ref(&r.name)) {
-                        self.msg = Some(format!("error: {e:#}"));
-                    } else {
-                        self.msg = Some(format!("stopped: {} ({dur})", r.name));
-                        self.try_tick(db);
-                    }
-                } else {
-                    self.msg = Some("nothing running".to_string());
+                if self.stop_selected(db) {
+                    self.try_tick(db);
                 }
             },
-            KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.nudge_rail(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.nudge_rail(-1);
+            }
             _ => {}
         }
     }
@@ -588,6 +612,7 @@ impl State {
             }
             KeyCode::Char('5') => {
                 self.mode = Mode::Activity;
+                self.activity.focus_rail = true;
                 self.refresh_activity(db);
             }
             KeyCode::Char('y') => {
@@ -660,6 +685,7 @@ impl State {
             }
             KeyCode::Char('5') => {
                 self.mode = Mode::Activity;
+                self.activity.focus_rail = true;
                 self.refresh_activity(db);
             }
             KeyCode::Char('j') | KeyCode::Down => self.move_manage_sel(1),
@@ -713,6 +739,7 @@ impl State {
             }
             KeyCode::Char('5') => {
                 self.mode = Mode::Activity;
+                self.activity.focus_rail = true;
                 self.refresh_activity(db);
             }
             KeyCode::Char('y') | KeyCode::Enter => {
@@ -781,6 +808,7 @@ impl State {
             }
             KeyCode::Char('5') => {
                 self.mode = Mode::Activity;
+                self.activity.focus_rail = true;
                 self.refresh_activity(db);
             }
             KeyCode::Char('t') => {
@@ -795,26 +823,28 @@ impl State {
         }
     }
 
-    /// Enter activity mode: rebuild the rail and scope history to the selection.
-    fn refresh_activity(&mut self, db: &Db) {
+    /// Rebuild the activity rail rows and keep the selection in range.
+    fn refresh_rail(&mut self, db: &Db) {
+        let index = db.activity_index().unwrap_or_default();
         let mut rows = vec![RailRow::All];
-        let unassigned = db.unassigned().unwrap_or_default();
-        if !unassigned.is_empty() {
-            rows.push(RailRow::Header("no category".to_string()));
-            for t in unassigned {
-                rows.push(RailRow::Activity(t.name));
+        let mut last_cat: Option<&str> = None;
+        for (name, cat) in &index {
+            let cat = cat.as_deref().unwrap_or("no category");
+            if last_cat != Some(cat) {
+                rows.push(RailRow::Header(cat.to_string()));
+                last_cat = Some(cat);
             }
-        }
-        for c in db.categories().unwrap_or_default() {
-            rows.push(RailRow::Header(c.name));
-            for a in &c.activities {
-                rows.push(RailRow::Activity(a.name.clone()));
-            }
+            rows.push(RailRow::Activity(name.clone()));
         }
         self.activity.rows = rows;
         if self.activity.sel >= self.activity.rows.len() {
             self.activity.sel = 0;
         }
+    }
+
+    /// Enter activity mode: rebuild the rail and scope history to the selection.
+    fn refresh_activity(&mut self, db: &Db) {
+        self.refresh_rail(db);
         self.apply_scope(db);
     }
 
@@ -832,9 +862,17 @@ impl State {
 
     /// Move the rail selection by `d`, skipping category headers.
     fn move_rail(&mut self, db: &Db, d: isize) {
+        if self.nudge_rail(d) {
+            self.apply_scope(db);
+        }
+    }
+
+    /// Shift the rail selection by `d`, skipping category headers.
+    /// Returns whether it moved.
+    fn nudge_rail(&mut self, d: isize) -> bool {
         let n = self.activity.rows.len();
         if n <= 1 {
-            return;
+            return false;
         }
         let mut i = self.activity.sel as isize;
         loop {
@@ -847,10 +885,11 @@ impl State {
                 break;
             }
         }
-        if i != self.activity.sel as isize {
-            self.activity.sel = i as usize;
-            self.apply_scope(db);
+        if i == self.activity.sel as isize {
+            return false;
         }
+        self.activity.sel = i as usize;
+        true
     }
 
     /// Activity mode: `tab` swaps focus between rail and history; the rail
@@ -1266,7 +1305,8 @@ fn draw_help(f: &mut Frame) {
         ])
         .split(v[1]);
     let raw = [
-        " LIVE (1)     s start · x stop · a add · t period · j/k select",
+        " LIVE (1)     s start · x stop · a add · t period · j/k rail",
+        "              enter open history of selected",
         " HISTORY (2)  j/k select · n/p day · h/l month · t today",
         "              a add session · e edit times · d delete",
         "              y year view (j/k month · h/l year · enter open)",
@@ -1403,7 +1443,7 @@ fn bar_row(
     let gutter = if is_sel {
         Span::styled("▸".to_string(), theme::selected_style())
     } else if let Some(c) = dot {
-        Span::styled("●".to_string(), Style::default().fg(c))
+        Span::styled("●".to_string(), Style::default().fg(theme::pulse(c)))
     } else {
         Span::raw(" ".repeat(indent))
     };
@@ -1425,7 +1465,7 @@ fn bar_row(
     }
 }
 
-/// Bottom bar: mode chips (current one lit) plus right-aligned context.
+/// Bottom bar: mode chips (current one lit), right-aligned context, and a ticking clock.
 fn status_bar(s: &State, width: u16) -> Line<'static> {
     let mut spans: Vec<Span> = Vec::new();
     for (k, label, m) in [
@@ -1489,6 +1529,7 @@ fn status_bar(s: &State, width: u16) -> Line<'static> {
             format!("{} · {}", fmt_day_title(s.stats.sel), fmt_short(total))
         }
     };
+    let clock = Local::now().format("%H:%M:%S").to_string();
     let right: Vec<Span> = vec![
         Span::styled(context, Style::default().fg(theme::MUTED)),
         theme::dim_span(" · "),
@@ -1496,6 +1537,8 @@ fn status_bar(s: &State, width: u16) -> Line<'static> {
         theme::dim_span(" help · "),
         theme::key_span("q"),
         theme::dim_span(" quit"),
+        theme::dim_span("  "),
+        theme::dim_span(&clock),
     ];
     let right_len: usize = right
         .iter()
@@ -1512,7 +1555,13 @@ fn status_bar(s: &State, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 fn draw_live(f: &mut Frame, s: &State) {
-    let area = f.area();
+    let h = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(RAIL_W), Constraint::Min(1)])
+        .split(f.area());
+    f.render_widget(activity_rail(s, h[0].height, true), h[0]);
+
+    let area = h[1];
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1522,8 +1571,6 @@ fn draw_live(f: &mut Frame, s: &State) {
             Constraint::Length(1),
         ])
         .split(area);
-
-    let sel = s.prompt.is_none() && s.selected < s.running.len();
     let items: Vec<ListItem> = if s.running.is_empty() {
         vec![ListItem::new(Line::from(
             theme::dim_span("nothing running - press s to start"),
@@ -1532,35 +1579,17 @@ fn draw_live(f: &mut Frame, s: &State) {
         let now = now_ms();
         s.running
             .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                let is_sel = sel && i == s.selected;
-                let mut tstyle = Style::default().fg(theme::MUTED);
-                let mut nstyle = Style::default().fg(theme::activity_color(&r.name));
-                if is_sel {
-                    tstyle = tstyle.add_modifier(Modifier::BOLD);
-                    nstyle = nstyle.add_modifier(Modifier::BOLD);
-                }
-                let gutter = if is_sel {
-                    Span::styled("▸".to_string(), theme::selected_style())
-                } else {
-                    Span::raw(" ")
-                };
-                let dot = Span::styled(
-                    "● ".to_string(),
-                    Style::default().fg(theme::activity_color(&r.name)),
-                );
+            .map(|r| {
+                let color = theme::activity_color(&r.name);
                 let line = Line::from(vec![
-                    gutter,
-                    Span::styled(format!("{:>11}", fmt_clock(now - r.started_at)), tstyle),
-                    dot,
-                    Span::styled(r.name.clone(), nstyle),
+                    Span::styled(
+                        format!("{:>11}", fmt_clock(now - r.started_at)),
+                        Style::default().fg(theme::MUTED),
+                    ),
+                    Span::styled("● ".to_string(), Style::default().fg(color)),
+                    Span::styled(r.name.clone(), Style::default().fg(color)),
                 ]);
-                if is_sel {
-                    ListItem::new(line).style(Style::default().bg(theme::SELECTED_BG))
-                } else {
-                    ListItem::new(line)
-                }
+                ListItem::new(line)
             })
             .collect()
     };
@@ -1932,13 +1961,13 @@ fn draw_activity(f: &mut Frame, s: &State) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(RAIL_W), Constraint::Min(1)])
         .split(f.area());
-    f.render_widget(activity_rail(s, h[0].height), h[0]);
+    f.render_widget(activity_rail(s, h[0].height, s.activity.focus_rail), h[0]);
     draw_hist_main(f, s, h[1]);
 }
 
 /// Left rail for activity mode: all + category headers + activities, with
-/// a colored dot next to running activities.
-fn activity_rail(s: &State, height: u16) -> List<'static> {
+/// a pulsing dot next to running activities.
+fn activity_rail(s: &State, height: u16, highlight: bool) -> List<'static> {
     let running: std::collections::HashSet<String> =
         s.running.iter().map(|r| r.name.to_lowercase()).collect();
     let items: Vec<ListItem> = s
@@ -1958,7 +1987,7 @@ fn activity_rail(s: &State, height: u16) -> List<'static> {
                     if running.contains(&n.to_lowercase()) {
                         spans.push(Span::styled(
                             "●".to_string(),
-                            Style::default().fg(theme::activity_color(n)),
+                            Style::default().fg(theme::pulse(theme::activity_color(n))),
                         ));
                     }
                     spans.push(Span::styled(
@@ -1969,7 +1998,7 @@ fn activity_rail(s: &State, height: u16) -> List<'static> {
                 }
             };
             let item = ListItem::new(line);
-            if i == s.activity.sel && s.activity.focus_rail {
+            if highlight && i == s.activity.sel {
                 item.style(Style::default().bg(theme::SELECTED_BG))
             } else {
                 item

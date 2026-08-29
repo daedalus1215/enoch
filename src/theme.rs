@@ -3,6 +3,8 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
+use crate::timefmt::now_ms;
+
 /// Accent: selection, active mode, highlights.
 pub const ACCENT: Color = Color::Cyan;
 /// Dim text: chrome, hints, empty states, bar troughs.
@@ -35,6 +37,16 @@ pub fn muted_span(t: &str) -> Span<'static> {
 /// Key span (yellow) for status-bar hints.
 pub fn key_span(t: &str) -> Span<'static> {
     Span::styled(t.to_string(), Style::default().fg(KEY))
+}
+
+/// Running-indicator color: the activity's color on even seconds, dim on odd —
+/// a slow heartbeat so live indicators feel alive.
+pub fn pulse(color: Color) -> Color {
+    if now_ms().div_euclid(1000) % 2 == 0 {
+        color
+    } else {
+        DIM
+    }
 }
 
 /// Stable, distinguishable color per activity name.
