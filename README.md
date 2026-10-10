@@ -66,7 +66,7 @@ Five modes, one key each — the status bar always shows the shortcuts:
 
 ```
 LIVE (1)      s start · x stop · a add · t period · j/k rail · enter hist
-HISTORY (2)   j/k select · n/p day · h/l month · t today
+HISTORY (2)   j/k select · ←/→ or n/p day · h/l month · t today
               a add session · e edit times · d delete
               y year view (j/k month · h/l year · enter open)
 MANAGE (3)    c new cat · r rename · d del cat · m move

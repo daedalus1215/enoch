@@ -626,8 +626,8 @@ impl State {
             KeyCode::Char('h') => self.nudge_month(db, -1),
             KeyCode::Char('l') => self.nudge_month(db, 1),
             KeyCode::Char('t') => self.set_sel(db, Local::now().date_naive()),
-            KeyCode::Char('n') => self.nudge_day(db, 1),
-            KeyCode::Char('p') => self.nudge_day(db, -1),
+            KeyCode::Char('n') | KeyCode::Right => self.nudge_day(db, 1),
+            KeyCode::Char('p') | KeyCode::Left => self.nudge_day(db, -1),
             KeyCode::Char('e') | KeyCode::Char('d') => {
                 let Some(row) = self.hist.sessions.get(self.sess_sel).cloned() else {
                     return;
@@ -1305,15 +1305,15 @@ fn draw_help(f: &mut Frame) {
         ])
         .split(v[1]);
     let raw = [
-        " LIVE (1)     s start · x stop · a add · t period · j/k rail",
-        "              enter open history of selected",
-        " HISTORY (2)  j/k select · n/p day · h/l month · t today",
-        "              a add session · e edit times · d delete",
-        "              y year view (j/k month · h/l year · enter open)",
+        " LIVE (1)     s start · x stop · a add · t period",
+        "              j/k rail · enter open history of selected",
+        " HISTORY (2)  j/k select · ←/→ or n/p day · h/l month",
+        "              t today · a add · e edit times · d delete",
+        "              y year: j/k month · h/l year · enter open",
         " MANAGE (3)   c new cat · r rename · d del cat · m move",
         "              j/k select (m needs an activity row)",
-        " STATS (4)    h/l day · j/k week · t today · enter history",
-        " ACTIVITY (5) tab rail/history · j/k pick on rail · hist keys",
+        " STATS (4)    h/l day · j/k week · t today · enter hist",
+        " ACTIVITY (5) tab rail/hist · j/k pick · hist keys",
         " COMMON       1/2/3/4/5 modes · ? help · q quit",
         " PROMPTS      tab complete · enter save · esc cancel",
     ];
