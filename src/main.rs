@@ -158,12 +158,16 @@ mod app {
     use std::io::IsTerminal;
 
     /// Opened from Finder, the Dock, Login Items or `open`, rather than run
-    /// in a terminal: the binary sits in an app bundle and has no terminal.
-    /// (The same binary linked onto the PATH and run in a terminal is not.)
+    /// as a command: the binary sits in an app bundle, was given no
+    /// arguments, and has no terminal. (The same binary linked onto the
+    /// PATH and run in a terminal, or by a script with arguments, is not.)
     pub fn opened() -> bool {
         let in_bundle = std::env::current_exe()
             .is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"));
-        in_bundle && !std::io::stdin().is_terminal() && !std::io::stderr().is_terminal()
+        in_bundle
+            && std::env::args_os().len() == 1
+            && !std::io::stdin().is_terminal()
+            && !std::io::stderr().is_terminal()
     }
 
     /// Send stderr (warnings, errors, panics; also those of the window it

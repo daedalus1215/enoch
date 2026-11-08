@@ -34,11 +34,14 @@ jobs:
           bin=dist/enoch.app/Contents/MacOS/enoch
           lipo -archs "$bin"
           "$bin" --version
+          # A command with arguments is not the app opening: no log.
+          test ! -e ~/Library/Logs/enoch.log
           # Opened like a user would: it should start the menu bar item and
           # keep running.
           open dist/enoch.app
           sleep 8
-          cat ~/Library/Logs/enoch.log || true
+          cat ~/Library/Logs/enoch.log
+          grep -q "opened as an app" ~/Library/Logs/enoch.log
           pgrep -x enoch
           pkill -x enoch
       - uses: actions/upload-artifact@v4
