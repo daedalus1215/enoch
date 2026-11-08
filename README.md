@@ -1,15 +1,18 @@
 # enoch
 
 A small, local time tracker. Start and stop activities from the shell, then
-watch them live in a TUI — with month-by-month history, a 365-day heatmap,
+watch them live in a TUI or a desktop window — with month-by-month history, a 365-day heatmap,
 and per-activity / per-category views. One binary, one SQLite file, no
-server.
+server. Runs on Linux and macOS.
 
 ## Install
 
 ```sh
 cargo build --release        # binary: target/release/enoch
 # or: cargo install --path .
+
+# CLI + TUI only, without the desktop window or tray icon:
+cargo build --release --no-default-features
 ```
 
 ## Quick start
@@ -33,6 +36,8 @@ enoch add NAME --from HH:MM [--to HH:MM] [--day D]    retroactive session
 enoch export [--from D] [--to D]                      sessions as CSV to stdout
 enoch cat new NAME | rename OLD NEW | move ACT CAT | rm NAME
 enoch tui                                             open the interactive panel
+enoch gui                                             open the desktop window
+enoch tray [--idle-after DURATION]                    show a tray icon (menu bar on macOS)
 ```
 
 - `D` is `YYYY-MM-DD`. `enoch add` defaults to today; `--to` defaults to
@@ -79,9 +84,96 @@ PROMPTS       tab complete · enter save · esc cancel
 
 `?` shows this screen inside the TUI; `esc` returns to live.
 
+## The GUI
+
+`enoch gui` opens a desktop window over the same database, with two tabs
+(`Ctrl+1` / `Ctrl+2`).
+
+**Live**
+
+- **Start box** — type an activity and press Enter. Existing activities
+  matching what you type appear as one-click buttons below it.
+- **Activities rail** — every activity grouped by category; ▶ starts it,
+  ■ stops it, running ones show a filled dot and their elapsed time.
+- **Running** — a live clock per running activity, with Stop / Stop all.
+- **Totals** — per-activity bars for today, this week, or all time.
+
+**Day** — one lane per activity, each session a bar on a timeline:
+
+- drag a bar's edge to change its start or end, or its middle to move it
+- drag across empty lane space to record a new session
+- right-click a bar to delete it or move it to another activity
+- times snap to 5 minutes (hold `Shift` for 1)
+- `Add lane` gives an activity with no sessions that day a lane to draw in
+- `Left` / `Right` change day, `T` jumps to today, `Full day` shows 00:00–24:00
+  instead of fitting the view to the day's sessions
+
+Running sessions are drawn up to now but, as in the TUI, can't be edited
+until stopped.
+
+The window re-reads the database every second, so `enoch start` / `stop`
+from a shell shows up without a restart. On Wayland its app id is
+`enoch`, for window rules.
+
+## The tray icon
+
+`enoch tray` puts a small clock in your system tray, or in the menu bar on
+macOS. It is plain when nothing is running and takes the running
+activity's color otherwise. Its menu stops each running activity (or all
+of them), starts a recent one, opens the window, or quits the tray.
+
+It reads the same database every second, so it stays in step with the CLI,
+TUI and window.
+
+**Time away.** If you leave the computer while something is being
+tracked, the tray notices: after 5 minutes without keyboard or mouse
+input, or when the machine was asleep. When you're back it offers to
+take that stretch out:
+
+- **Drop it, keep tracking** — what was running loses the time away and
+  carries on from when you came back
+- **Drop it and stop** — what was running stops as of when you left
+- **Keep it** — count the time after all
+
+The offer sits at the top of the menu until you choose; on Linux it also
+comes as a notification with those buttons. Only the latest stretch is
+offered; a newer one replaces it and the older time is kept. Change the
+threshold with `enoch tray --idle-after 10m` (`0` turns it off). On Linux,
+noticing idleness needs a Wayland compositor with `ext-idle-notify-v1`
+(Hyprland, Sway, KDE…), and something holding an idle inhibitor, such as
+a playing video, counts as you being there; on X11 or other compositors
+only sleep is noticed.
+
+**Linux** — any StatusNotifierItem host works: Waybar's `tray` module, the
+Omarchy shell, KDE… Hover for what is running and for how long; left
+click opens the window (`enoch gui`). To start it with your session, add
+it to your compositor's autostart, e.g. for Hyprland `exec-once = enoch
+tray` (or `hl.exec_cmd("enoch tray")` in a Lua config).
+
+**macOS** — the clock sits in the menu bar, next to the elapsed time of the
+longest-running activity (or `away 23m` while an offer to drop time away
+waits); click it for the menu. There is no Dock icon.
+To start it at login, save this as
+`~/Library/LaunchAgents/enoch.tray.plist` (with the path to your binary)
+and run
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/enoch.tray.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>enoch.tray</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/YOU/.cargo/bin/enoch</string><string>tray</string></array>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+```
+
 ## Data
 
-- Stored in `~/.local/share/enoch/enoch.db`, or
+- Stored in `~/.local/share/enoch/enoch.db` (on macOS too), or
   `$XDG_DATA_HOME/enoch/enoch.db` if `XDG_DATA_HOME` is set. It is a
   single SQLite file — back it up or copy it between machines like any
   file.

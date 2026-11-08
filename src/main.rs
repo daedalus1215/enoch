@@ -1,4 +1,8 @@
+#[cfg(feature = "gui")]
+mod gui;
 mod theme;
+#[cfg(all(feature = "tray", unix))]
+mod tray;
 mod tui;
 use anyhow::{Context, Result};
 use chrono::{Local, NaiveDate};
@@ -36,6 +40,19 @@ enum Cmd {
     Report,
     /// Open the interactive panel (default when no subcommand is given)
     Tui,
+    /// Open the desktop window
+    #[cfg(feature = "gui")]
+    Gui,
+    /// Show a tray icon (the menu bar on macOS) with what is running,
+    /// start/stop, and the window
+    #[cfg(all(feature = "tray", unix))]
+    Tray {
+        /// Time without input that counts as away, after which the tray
+        /// offers to drop it from what was running (e.g. 5m, 90s, 1h30m;
+        /// 0 turns this off)
+        #[arg(long, value_name = "DURATION", default_value = "5m", value_parser = parse_idle_after)]
+        idle_after: i64,
+    },
     /// Add a retroactive session (closed, explicit times)
     Add {
         /// Activity name (created if new)
@@ -108,6 +125,10 @@ fn run() -> Result<()> {
         Cmd::Export { from, to } => cmd_export(&db, &from, &to),
         Cmd::Cat { action } => cmd_cat(&db, action),
         Cmd::Tui => tui::run(),
+        #[cfg(feature = "gui")]
+        Cmd::Gui => gui::run(db),
+        #[cfg(all(feature = "tray", unix))]
+        Cmd::Tray { idle_after } => tray::run(db, idle_after),
     }
 }
 
@@ -392,6 +413,12 @@ fn cmd_export(db: &Db, from: &Option<String>, to: &Option<String>) -> Result<()>
         println!("{},{},{},{dur}", csv_field(&r.name), iso_local(r.started_at), end);
     }
     Ok(())
+}
+
+#[cfg(all(feature = "tray", unix))]
+fn parse_idle_after(s: &str) -> std::result::Result<i64, String> {
+    enoch::timefmt::parse_duration(s)
+        .ok_or_else(|| format!("{s:?}: want e.g. 5m, 90s, 1h30m, or 0 to turn off"))
 }
 
 /// Parse `YYYY-MM-DD`; the context label goes into the error message.
