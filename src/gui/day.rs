@@ -272,8 +272,17 @@ fn timeline_area(
     } else {
         3
     };
-    // Hour labels give way to the "now" marker's label where they would collide.
-    let now_x = (range.0..=range.1).contains(&now).then(|| axis.x(now));
+    // Where the "now" marker's label goes (it is drawn last, over the lanes);
+    // hour labels give way to it.
+    let now_label = (range.0..=range.1).contains(&now).then(|| {
+        let size = painter
+            .layout_no_wrap("now".into(), FontId::proportional(11.0), style::ERROR)
+            .size();
+        Align2::CENTER_TOP.anchor_size(Pos2::new(axis.x(now), rect.top() + 3.0), size)
+    });
+    const LABEL_GAP: f32 = 6.0;
+    let mut labels: Vec<Rect> = Vec::new();
+    let mut galleys = Vec::new();
     let mut h = 0;
     while day.0 + h * HOUR <= day.1 {
         let t = day.0 + h * HOUR;
@@ -284,8 +293,7 @@ fn timeline_area(
                 lanes_top..=rect.bottom(),
                 Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
             );
-            let clear_of_now = now_x.is_none_or(|nx| (nx - x).abs() > 28.0);
-            if h % every == 0 && clear_of_now {
+            if h % every == 0 {
                 // Keep the first and last labels inside the timeline.
                 let align = if x > axis.x1 - 18.0 {
                     Align2::RIGHT_TOP
@@ -294,16 +302,30 @@ fn timeline_area(
                 } else {
                     Align2::CENTER_TOP
                 };
-                painter.text(
-                    Pos2::new(x, rect.top() + 3.0),
-                    align,
-                    fmt_hm(t),
-                    FontId::monospace(11.0),
-                    weak,
-                );
+                let galley = painter.layout_no_wrap(fmt_hm(t), FontId::monospace(11.0), weak);
+                let r = align.anchor_size(Pos2::new(x, rect.top() + 3.0), galley.size());
+                let clear_of_now = now_label.is_none_or(|n| {
+                    r.right() + LABEL_GAP <= n.left() || r.left() >= n.right() + LABEL_GAP
+                });
+                if clear_of_now {
+                    labels.push(r);
+                    galleys.push(galley);
+                }
             }
         }
         h += 1;
+    }
+    // Pulled inside at the ends, the first and last labels can run into
+    // their neighbours; leave out any label that would touch the one before.
+    let spans: Vec<(f32, f32)> = labels.iter().map(|r| (r.left(), r.right())).collect();
+    for ((r, galley), keep) in labels
+        .iter()
+        .zip(galleys)
+        .zip(timeline::spaced(&spans, LABEL_GAP))
+    {
+        if keep {
+            painter.galley(r.min, galley, weak);
+        }
     }
 
     if lanes.is_empty() {

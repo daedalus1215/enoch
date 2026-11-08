@@ -127,9 +127,37 @@ pub fn fit(day: (i64, i64), points: impl IntoIterator<Item = i64>, min_span: i64
     (lo.max(d0), hi.min(d1))
 }
 
+/// Which labels to draw, given each one's horizontal extent `(left, right)`
+/// in drawing order: each is kept unless it starts within `gap` px of the
+/// last one kept.
+pub fn spaced(spans: &[(f32, f32)], gap: f32) -> Vec<bool> {
+    let mut free = f32::NEG_INFINITY;
+    spans
+        .iter()
+        .map(|&(left, right)| {
+            let keep = left >= free;
+            if keep {
+                free = right + gap;
+            }
+            keep
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_that_would_touch_are_left_out() {
+        // A first label pulled right into its neighbour, which is dropped;
+        // the one after that clears the first and stays.
+        let spans = [(0.0, 38.0), (30.0, 68.0), (79.0, 117.0), (100.0, 138.0)];
+        assert_eq!(spaced(&spans, 6.0), vec![true, false, true, false]);
+        // Exactly `gap` apart is fine.
+        assert_eq!(spaced(&[(0.0, 10.0), (16.0, 20.0)], 6.0), vec![true, true]);
+        assert!(spaced(&[], 6.0).is_empty());
+    }
 
     const DAY: (i64, i64) = (0, 24 * HOUR);
 
