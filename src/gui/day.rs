@@ -99,7 +99,7 @@ impl DayView {
         }
     }
 
-    fn set_day(&mut self, d: NaiveDate) {
+    pub(super) fn set_day(&mut self, d: NaiveDate) {
         if d != self.day {
             self.day = d;
             self.drag = None;

@@ -34,6 +34,22 @@ pub fn fmt_short(ms: i64) -> String {
     }
 }
 
+/// Long totals in hours rather than days: `989h`, `42h 10m`, `45m`, `12s`.
+/// Minutes are left out from 100 hours on.
+pub fn fmt_hours(ms: i64) -> String {
+    let s = ms.div_euclid(1000);
+    let (h, m) = (s / 3600, (s % 3600) / 60);
+    if h >= 100 {
+        format!("{h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else if m > 0 {
+        format!("{m}m")
+    } else {
+        format!("{s}s")
+    }
+}
+
 /// Unix millis of local midnight on date `d`.
 ///
 /// Ambiguous midnights (DST fall-back) resolve to the earliest instant; a
@@ -184,6 +200,15 @@ pub fn parse_duration(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hours() {
+        const H: i64 = 3_600_000;
+        assert_eq!(fmt_hours(989 * H + 20 * 60_000), "989h");
+        assert_eq!(fmt_hours(42 * H + 10 * 60_000), "42h 10m");
+        assert_eq!(fmt_hours(45 * 60_000), "45m");
+        assert_eq!(fmt_hours(12_000), "12s");
+    }
 
     #[test]
     fn durations() {

@@ -358,6 +358,14 @@ impl Db {
         Ok(rows)
     }
 
+    /// When the earliest session started, if there is one.
+    pub fn first_started_at(&self) -> Result<Option<i64>> {
+        let at = self
+            .conn
+            .query_row("SELECT MIN(started_at) FROM sessions", [], |r| r.get(0))?;
+        Ok(at)
+    }
+
     /// Per-calendar-day totals (local time) within [from, to) and matching
     /// `scope`, as (YYYY-MM-DD, ms).
     ///
@@ -762,6 +770,15 @@ mod tests {
         let t = db.totals(2_000, 4_000, &Scope::All).unwrap();
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].ms, 2_000);
+    }
+
+    #[test]
+    fn first_started_at_is_the_earliest_session() {
+        let db = mem();
+        assert_eq!(db.first_started_at().unwrap(), None);
+        db.add_session("read", 5_000, 6_000).unwrap();
+        db.add_session("code", 2_000, 3_000).unwrap();
+        assert_eq!(db.first_started_at().unwrap(), Some(2_000));
     }
 
     #[test]
