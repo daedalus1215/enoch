@@ -3,7 +3,7 @@
 A small, local time tracker. Start and stop activities from the shell, then
 watch them live in a TUI or a desktop window — with month-by-month history, a 365-day heatmap,
 and per-activity / per-category views. One binary, one SQLite file, no
-server.
+server. Runs on Linux and macOS.
 
 ## Install
 
@@ -37,7 +37,7 @@ enoch export [--from D] [--to D]                      sessions as CSV to stdout
 enoch cat new NAME | rename OLD NEW | move ACT CAT | rm NAME
 enoch tui                                             open the interactive panel
 enoch gui                                             open the desktop window
-enoch tray                                            show a tray icon
+enoch tray                                            show a tray icon (menu bar on macOS)
 ```
 
 - `D` is `YYYY-MM-DD`. `enoch add` defaults to today; `--to` defaults to
@@ -117,24 +117,43 @@ from a shell shows up without a restart. On Wayland its app id is
 
 ## The tray icon
 
-`enoch tray` puts a small clock in your bar's system tray (any
-StatusNotifierItem host: Waybar's `tray` module, the Omarchy shell, KDE…).
-It is gray when nothing is running and takes the running activity's color
-otherwise.
-
-- **hover** — what is running and for how long
-- **left click** — open the window (`enoch gui`)
-- **menu** — stop each running activity (or all), start a recent one, open
-  the window, or quit the tray
+`enoch tray` puts a small clock in your system tray, or in the menu bar on
+macOS. It is plain when nothing is running and takes the running
+activity's color otherwise. Its menu stops each running activity (or all
+of them), starts a recent one, opens the window, or quits the tray.
 
 It reads the same database every second, so it stays in step with the CLI,
-TUI and window. To start it with your session, add it to your compositor's
-autostart, e.g. for Hyprland `exec-once = enoch tray` (or
-`hl.exec_cmd("enoch tray")` in a Lua config).
+TUI and window.
+
+**Linux** — any StatusNotifierItem host works: Waybar's `tray` module, the
+Omarchy shell, KDE… Hover for what is running and for how long; left
+click opens the window (`enoch gui`). To start it with your session, add
+it to your compositor's autostart, e.g. for Hyprland `exec-once = enoch
+tray` (or `hl.exec_cmd("enoch tray")` in a Lua config).
+
+**macOS** — the clock sits in the menu bar, next to the elapsed time of the
+longest-running activity; click it for the menu. There is no Dock icon.
+To start it at login, save this as
+`~/Library/LaunchAgents/enoch.tray.plist` (with the path to your binary)
+and run
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/enoch.tray.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>enoch.tray</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/YOU/.cargo/bin/enoch</string><string>tray</string></array>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+```
 
 ## Data
 
-- Stored in `~/.local/share/enoch/enoch.db`, or
+- Stored in `~/.local/share/enoch/enoch.db` (on macOS too), or
   `$XDG_DATA_HOME/enoch/enoch.db` if `XDG_DATA_HOME` is set. It is a
   single SQLite file — back it up or copy it between machines like any
   file.

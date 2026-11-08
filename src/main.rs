@@ -1,7 +1,7 @@
 #[cfg(feature = "gui")]
 mod gui;
 mod theme;
-#[cfg(feature = "tray")]
+#[cfg(all(feature = "tray", unix))]
 mod tray;
 mod tui;
 use anyhow::{Context, Result};
@@ -43,8 +43,9 @@ enum Cmd {
     /// Open the desktop window
     #[cfg(feature = "gui")]
     Gui,
-    /// Show a tray icon with what is running, start/stop, and the window
-    #[cfg(feature = "tray")]
+    /// Show a tray icon (the menu bar on macOS) with what is running,
+    /// start/stop, and the window
+    #[cfg(all(feature = "tray", unix))]
     Tray,
     /// Add a retroactive session (closed, explicit times)
     Add {
@@ -120,7 +121,7 @@ fn run() -> Result<()> {
         Cmd::Tui => tui::run(),
         #[cfg(feature = "gui")]
         Cmd::Gui => gui::run(db),
-        #[cfg(feature = "tray")]
+        #[cfg(all(feature = "tray", unix))]
         Cmd::Tray => tray::run(db),
     }
 }
