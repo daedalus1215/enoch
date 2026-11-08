@@ -8,39 +8,33 @@ server. Runs on Linux and macOS.
 ## Install
 
 ```sh
-cargo build --release        # binary: target/release/enoch
-# or: cargo install --path .
-
-# CLI + TUI only, without the desktop window or tray icon:
-cargo build --release --no-default-features
+cargo install --git https://github.com/daedalus1215/enoch
 ```
 
-### macOS app
+The same on Linux and macOS. From a clone, `cargo install --path .`; add
+`--no-default-features` for just the CLI and TUI, without the window or tray.
 
-Each release has `enoch-macos.zip` with `enoch.app` in it (Apple Silicon and
-Intel), so a Mac doesn't need Rust. Unzip it and move `enoch.app` into
-Applications.
-
-The app is signed ad hoc but not notarized by Apple, so the first time
-macOS refuses to open it. Either open **System Settings → Privacy &
-Security** and click **Open Anyway** next to the message about enoch, or
-run once:
+### On a Mac
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/enoch.app
+cargo install --git https://github.com/daedalus1215/enoch
+enoch tray    # a clock in the menu bar
+enoch gui     # the window (Cmd+1/2/3 for its tabs)
 ```
 
-Opening the app starts the menu bar item (`enoch tray`); its **Open window**
-opens the window. To start it at login, add it under **System Settings →
-General → Login Items**. For the CLI and TUI as well, link the binary onto
-your PATH; run in a terminal, it behaves like any other `enoch`:
+That covers everything but one thing: the notification with buttons when
+you've been away needs enoch to run as an app. To build `enoch.app` from a
+clone:
 
 ```sh
-sudo ln -s /Applications/enoch.app/Contents/MacOS/enoch /usr/local/bin/enoch
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+macos/build-app.sh
+open dist/enoch.app    # or move it to Applications first
 ```
 
-The app writes warnings and errors to `~/Library/Logs/enoch.log` (Console.app
-shows it too). The app and the CLI share one database, as everywhere.
+Opening the app starts the menu bar clock; add it to **System Settings →
+General → Login Items** to start it at login. It writes errors to
+`~/Library/Logs/enoch.log`.
 
 ## Quick start
 
