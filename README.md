@@ -15,6 +15,33 @@ cargo build --release        # binary: target/release/enoch
 cargo build --release --no-default-features
 ```
 
+### macOS app
+
+Each release has `enoch-macos.zip` with `enoch.app` in it (Apple Silicon and
+Intel), so a Mac doesn't need Rust. Unzip it and move `enoch.app` into
+Applications.
+
+The app is signed ad hoc but not notarized by Apple, so the first time
+macOS refuses to open it. Either open **System Settings → Privacy &
+Security** and click **Open Anyway** next to the message about enoch, or
+run once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/enoch.app
+```
+
+Opening the app starts the menu bar item (`enoch tray`); its **Open window**
+opens the window. To start it at login, add it under **System Settings →
+General → Login Items**. For the CLI and TUI as well, link the binary onto
+your PATH; run in a terminal, it behaves like any other `enoch`:
+
+```sh
+sudo ln -s /Applications/enoch.app/Contents/MacOS/enoch /usr/local/bin/enoch
+```
+
+The app writes warnings and errors to `~/Library/Logs/enoch.log` (Console.app
+shows it too). The app and the CLI share one database, as everywhere.
+
 ## Quick start
 
 ```sh
