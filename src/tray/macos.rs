@@ -4,9 +4,9 @@
 //! elapsed time next to the clock. No Dock icon.
 //!
 //! Time away comes from polling the HID idle time each tick, plus the
-//! tick's sleep check. A bare binary can't post notifications with buttons
-//! on macOS, so an offer to drop time away shows as `away 23m` in the menu
-//! bar until it is kept or dropped from the menu.
+//! tick's sleep check. An offer to drop time away shows as `away 23m` in the
+//! menu bar until it is kept or dropped from the menu; run as enoch.app it
+//! also comes as a notification with the same buttons (see `usernotify`).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -24,14 +24,22 @@ use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::window::WindowId;
 
 use super::away::Tracker;
+use super::usernotify::Notifier;
 use super::{Action, Entry, Tray, clock_rgba, elapsed, summary};
+
+/// What wakes the event loop besides its tick.
+enum UserEvent {
+    Menu(MenuEvent),
+    /// A button on the time-away notification.
+    Away(Action),
+}
 
 /// Icon size in pixels. The menu bar draws it 18 points tall, so this is
 /// sharp on Retina displays.
 const ICON_PX: u32 = 36;
 
 pub fn run(db: Db, idle_after_ms: i64) -> Result<()> {
-    let mut builder = EventLoop::<MenuEvent>::with_user_event();
+    let mut builder = EventLoop::<UserEvent>::with_user_event();
     builder
         // A menu bar item only: no Dock icon or app menu.
         .with_activation_policy(ActivationPolicy::Accessory)
@@ -42,11 +50,16 @@ pub fn run(db: Db, idle_after_ms: i64) -> Result<()> {
     let proxy = Mutex::new(event_loop.create_proxy());
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
         if let Ok(p) = proxy.lock() {
-            let _ = p.send_event(e);
+            let _ = p.send_event(UserEvent::Menu(e));
         }
     }));
+    let away = event_loop.create_proxy();
+    let notifier = Notifier::new(move |a| {
+        let _ = away.send_event(UserEvent::Away(a));
+    });
 
     let mut app = App {
+        notifier,
         tray: Tray::new(db),
         tracker: Tracker::new(idle_after_ms),
         awake: Instant::now(),
@@ -64,6 +77,8 @@ pub fn run(db: Db, idle_after_ms: i64) -> Result<()> {
 }
 
 struct App {
+    /// Notifications for time away, when run as enoch.app.
+    notifier: Option<Notifier>,
     tray: Tray,
     tracker: Tracker,
     /// Origin of the monotonic clock for the tracker's sleep check.
@@ -113,7 +128,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler<MenuEvent> for App {
+impl ApplicationHandler<UserEvent> for App {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         let tick = match cause {
             // tray-icon wants the item added once the loop is running.
@@ -127,16 +142,21 @@ impl ApplicationHandler<MenuEvent> for App {
             }
             StartCause::ResumeTimeReached { .. } => {
                 let now = now_ms();
-                let mut changed = self.tray.reload();
+                let changed = self.tray.reload();
                 let polled = (self.tracker.threshold() > 0)
                     .then(|| self.tracker.idle_for(now, input_idle_ms()))
                     .flatten();
                 let mono = self.awake.elapsed().as_millis() as i64;
                 let away = [polled, self.tracker.tick(now, mono)];
+                let mut offered = false;
                 for a in away.into_iter().flatten() {
-                    changed |= self.tray.offer(a);
+                    offered |= self.tray.offer(a);
                 }
-                if changed {
+                if let (true, Some(n), Some(o)) = (offered, &self.notifier, &self.tray.offer) {
+                    let (title, body) = o.text();
+                    n.show(&title, &body);
+                }
+                if changed || offered {
                     self.refresh();
                 }
                 true
@@ -151,11 +171,25 @@ impl ApplicationHandler<MenuEvent> for App {
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, e: MenuEvent) {
-        let Some(action) = self.actions.get(&e.id).cloned() else {
-            return;
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        let action = match event {
+            UserEvent::Menu(e) => match self.actions.get(&e.id) {
+                Some(a) => a.clone(),
+                None => return,
+            },
+            // The offer may have been settled from the menu meanwhile.
+            UserEvent::Away(a) if self.tray.offer.is_some() => a,
+            UserEvent::Away(_) => return,
         };
+        let offered = self.tray.offer.is_some();
         self.tray.apply(&action);
+        // Settled (from the menu or on quitting): the notification can go.
+        if offered
+            && (self.tray.offer.is_none() || self.tray.quit)
+            && let Some(n) = &self.notifier
+        {
+            n.withdraw();
+        }
         if self.tray.quit {
             event_loop.exit();
             return;

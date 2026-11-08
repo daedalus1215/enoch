@@ -182,8 +182,9 @@ take that stretch out:
 - **Drop it and stop** — what was running stops as of when you left
 - **Keep it** — count the time after all
 
-The offer sits at the top of the menu until you choose; on Linux it also
-comes as a notification with those buttons. Only the latest stretch is
+The offer sits at the top of the menu until you choose. On Linux, and on
+macOS when run as `enoch.app`, it also comes as a notification with those
+buttons. Only the latest stretch is
 offered; a newer one replaces it and the older time is kept. Change the
 threshold with `enoch tray --idle-after 10m` (`0` turns it off). On Linux,
 noticing idleness needs a Wayland compositor with `ext-idle-notify-v1`
@@ -199,8 +200,11 @@ tray` (or `hl.exec_cmd("enoch tray")` in a Lua config).
 
 **macOS** — the clock sits in the menu bar, next to the elapsed time of the
 longest-running activity (or `away 23m` while an offer to drop time away
-waits); click it for the menu. There is no Dock icon.
-To start it at login, save this as
+waits); click it for the menu. There is no Dock icon. Run as `enoch.app`
+(see Install), the offer also comes as a notification: macOS asks once
+whether enoch may notify you, and in System Settings → Notifications you
+can make its style "Alerts" so the buttons stay until you pick one. With the
+app, starting at login is just a Login Item; for a bare binary, save this as
 `~/Library/LaunchAgents/enoch.tray.plist` (with the path to your binary)
 and run
 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/enoch.tray.plist`:

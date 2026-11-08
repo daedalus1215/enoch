@@ -24,6 +24,8 @@ mod away;
 mod macos;
 #[cfg(not(target_os = "macos"))]
 mod notify;
+#[cfg(target_os = "macos")]
+mod usernotify;
 #[cfg(not(target_os = "macos"))]
 mod sni;
 #[cfg(not(target_os = "macos"))]
@@ -114,7 +116,6 @@ impl Offer {
     }
 
     /// Notification title and body.
-    #[cfg(not(target_os = "macos"))]
     fn text(&self) -> (String, String) {
         (
             format!("Away for {}", self.length()),
