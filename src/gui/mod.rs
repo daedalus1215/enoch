@@ -1,9 +1,12 @@
-//! Desktop window: live timers, start/stop, and per-period totals.
+//! Desktop window: live timers, start/stop and per-period totals (Live),
+//! and a drag-to-edit timeline of one day's sessions (Day).
 //!
 //! Reads the same SQLite file as the CLI and TUI and re-queries it every
 //! second, so `enoch start` in a shell shows up here without a restart.
 
+mod day;
 mod style;
+mod timeline;
 
 use std::time::{Duration, Instant};
 
@@ -11,7 +14,9 @@ use anyhow::Result;
 use chrono::Local;
 use eframe::egui::{self, Align, Layout, RichText, Sense, Ui};
 use enoch::db::{Db, Running, Scope, StartOutcome, Total};
-use enoch::timefmt::{date_of, day_bounds, fmt_clock, fmt_hm, fmt_short, now_ms, week_bounds};
+use enoch::timefmt::{
+    date_of, day_bounds, fmt_clock, fmt_hm, fmt_range, fmt_short, now_ms, week_bounds,
+};
 
 /// How long a status-bar message stays up.
 const FLASH_FOR: Duration = Duration::from_secs(6);
@@ -91,12 +96,30 @@ impl Snapshot {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Live,
+    Day,
+}
+
 /// Things the UI asked for this frame, applied once drawing is done.
 enum Action {
     Start(String),
     /// Stop these activities; empty stops everything.
     Stop(Vec<String>),
     Period(Period),
+    AddSession {
+        name: String,
+        start: i64,
+        end: i64,
+    },
+    UpdateSession {
+        id: i64,
+        name: String,
+        start: i64,
+        end: i64,
+    },
+    DeleteSession(i64),
 }
 
 struct Flash {
@@ -107,6 +130,8 @@ struct Flash {
 
 struct App {
     db: Db,
+    tab: Tab,
+    day: day::DayView,
     period: Period,
     snap: Snapshot,
     /// When `snap` was loaded; `None` forces a reload next frame.
@@ -120,6 +145,8 @@ impl App {
     fn new(db: Db) -> Self {
         Self {
             db,
+            tab: Tab::Live,
+            day: day::DayView::new(),
             period: Period::Today,
             snap: Snapshot::default(),
             loaded_at: None,
@@ -141,6 +168,13 @@ impl App {
         match Snapshot::load(&self.db, self.period) {
             Ok(s) => self.snap = s,
             Err(e) => self.error(e),
+        }
+        if self.tab == Tab::Day {
+            let (from, to) = day_bounds(self.day.day);
+            match self.db.sessions_in(from, to, &Scope::All) {
+                Ok(s) => self.day.sessions = s,
+                Err(e) => self.error(e),
+            }
         }
         self.loaded_at = Some(Instant::now());
     }
@@ -191,6 +225,25 @@ impl App {
                 Err(e) => self.error(e),
             },
             Action::Period(p) => self.period = p,
+            Action::AddSession { name, start, end } => {
+                match self.db.add_session(&name, start, end) {
+                    Ok(_) => self.info(format!("added {name} {}", fmt_range(start, end))),
+                    Err(e) => self.error(e),
+                }
+            }
+            Action::UpdateSession {
+                id,
+                name,
+                start,
+                end,
+            } => match self.db.update_session(id, &name, start, end) {
+                Ok(()) => self.info(format!("{name} now {}", fmt_range(start, end))),
+                Err(e) => self.error(e),
+            },
+            Action::DeleteSession(id) => match self.db.delete_session(id) {
+                Ok(()) => self.info("deleted session"),
+                Err(e) => self.error(e),
+            },
         }
         self.loaded_at = None;
     }
@@ -207,7 +260,10 @@ impl App {
                     ui.label(RichText::new(&f.text).color(color));
                 }
                 _ => {
-                    ui.weak("type an activity and press Enter to start it");
+                    ui.weak(match self.tab {
+                        Tab::Live => "type an activity and press Enter to start it",
+                        Tab::Day => "Left / Right: previous / next day · T: today",
+                    });
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -236,7 +292,9 @@ impl App {
             }
             let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let can_start = !self.start_text.trim().is_empty();
-            let clicked = ui.add_enabled(can_start, egui::Button::new("Start")).clicked();
+            let clicked = ui
+                .add_enabled(can_start, egui::Button::new("Start"))
+                .clicked();
             if (entered || clicked) && can_start {
                 actions.push(Action::Start(std::mem::take(&mut self.start_text)));
                 self.focus_start = true;
@@ -280,6 +338,29 @@ impl eframe::App for App {
         let now = now_ms();
         let mut actions = Vec::new();
 
+        egui::Panel::top("tabs").show(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("enoch").strong().color(style::ACCENT));
+                ui.add_space(12.0);
+                for (tab, label, key) in [
+                    (Tab::Live, "Live", egui::Key::Num1),
+                    (Tab::Day, "Day", egui::Key::Num2),
+                ] {
+                    let shortcut = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, key));
+                    let clicked = ui
+                        .selectable_label(self.tab == tab, label)
+                        .on_hover_text(format!("Ctrl+{}", if tab == Tab::Live { 1 } else { 2 }))
+                        .clicked();
+                    if (clicked || shortcut) && self.tab != tab {
+                        self.tab = tab;
+                        self.loaded_at = None;
+                        self.focus_start = tab == Tab::Live;
+                    }
+                }
+            });
+            ui.add_space(2.0);
+        });
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.add_space(2.0);
             self.status_bar(ui);
@@ -289,16 +370,29 @@ impl eframe::App for App {
             .default_size(230.0)
             .min_size(160.0)
             .show(ui, |ui| rail(ui, &self.snap, now, &mut actions));
+        let shown_day = self.day.day;
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(4.0);
-                self.start_box(ui, &mut actions);
-                ui.add_space(18.0);
-                running(ui, &self.snap, now, &mut actions);
-                ui.add_space(18.0);
-                totals(ui, &self.snap, self.period, &mut actions);
+                match self.tab {
+                    Tab::Live => {
+                        self.start_box(ui, &mut actions);
+                        ui.add_space(18.0);
+                        running(ui, &self.snap, now, &mut actions);
+                        ui.add_space(18.0);
+                        totals(ui, &self.snap, self.period, &mut actions);
+                    }
+                    Tab::Day => {
+                        let names: Vec<String> =
+                            self.snap.rail.iter().map(|(n, _)| n.clone()).collect();
+                        day::show(ui, &mut self.day, &names, now, &mut actions);
+                    }
+                }
             });
         });
+        if self.day.day != shown_day {
+            self.loaded_at = None;
+        }
 
         for a in actions {
             self.apply(a);
@@ -327,7 +421,11 @@ fn rail(ui: &mut Ui, snap: &Snapshot, now: i64, actions: &mut Vec<Action>) {
             if group != Some(cat) {
                 ui.add_space(6.0);
                 let label = cat.as_deref().unwrap_or("no category");
-                ui.label(RichText::new(label).small().color(ui.visuals().weak_text_color()));
+                ui.label(
+                    RichText::new(label)
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
                 group = Some(cat);
             }
             rail_row(ui, name, snap.started_at(name), now, actions);

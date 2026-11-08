@@ -85,7 +85,10 @@ PROMPTS       tab complete · enter save · esc cancel
 
 ## The GUI
 
-`enoch gui` opens a desktop window over the same database:
+`enoch gui` opens a desktop window over the same database, with two tabs
+(`Ctrl+1` / `Ctrl+2`).
+
+**Live**
 
 - **Start box** — type an activity and press Enter. Existing activities
   matching what you type appear as one-click buttons below it.
@@ -93,6 +96,19 @@ PROMPTS       tab complete · enter save · esc cancel
   ■ stops it, running ones show a filled dot and their elapsed time.
 - **Running** — a live clock per running activity, with Stop / Stop all.
 - **Totals** — per-activity bars for today, this week, or all time.
+
+**Day** — one lane per activity, each session a bar on a timeline:
+
+- drag a bar's edge to change its start or end, or its middle to move it
+- drag across empty lane space to record a new session
+- right-click a bar to delete it or move it to another activity
+- times snap to 5 minutes (hold `Shift` for 1)
+- `Add lane` gives an activity with no sessions that day a lane to draw in
+- `Left` / `Right` change day, `T` jumps to today, `Full day` shows 00:00–24:00
+  instead of fitting the view to the day's sessions
+
+Running sessions are drawn up to now but, as in the TUI, can't be edited
+until stopped.
 
 The window re-reads the database every second, so `enoch start` / `stop`
 from a shell shows up without a restart. On Wayland its app id is
