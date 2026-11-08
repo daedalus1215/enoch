@@ -11,7 +11,7 @@ server.
 cargo build --release        # binary: target/release/enoch
 # or: cargo install --path .
 
-# CLI + TUI only, without the desktop window (no GUI dependencies):
+# CLI + TUI only, without the desktop window or tray icon:
 cargo build --release --no-default-features
 ```
 
@@ -37,6 +37,7 @@ enoch export [--from D] [--to D]                      sessions as CSV to stdout
 enoch cat new NAME | rename OLD NEW | move ACT CAT | rm NAME
 enoch tui                                             open the interactive panel
 enoch gui                                             open the desktop window
+enoch tray                                            show a tray icon
 ```
 
 - `D` is `YYYY-MM-DD`. `enoch add` defaults to today; `--to` defaults to
@@ -113,6 +114,23 @@ until stopped.
 The window re-reads the database every second, so `enoch start` / `stop`
 from a shell shows up without a restart. On Wayland its app id is
 `enoch`, for window rules.
+
+## The tray icon
+
+`enoch tray` puts a small clock in your bar's system tray (any
+StatusNotifierItem host: Waybar's `tray` module, the Omarchy shell, KDE…).
+It is gray when nothing is running and takes the running activity's color
+otherwise.
+
+- **hover** — what is running and for how long
+- **left click** — open the window (`enoch gui`)
+- **menu** — stop each running activity (or all), start a recent one, open
+  the window, or quit the tray
+
+It reads the same database every second, so it stays in step with the CLI,
+TUI and window. To start it with your session, add it to your compositor's
+autostart, e.g. for Hyprland `exec-once = enoch tray` (or
+`hl.exec_cmd("enoch tray")` in a Lua config).
 
 ## Data
 

@@ -1,6 +1,8 @@
 #[cfg(feature = "gui")]
 mod gui;
 mod theme;
+#[cfg(feature = "tray")]
+mod tray;
 mod tui;
 use anyhow::{Context, Result};
 use chrono::{Local, NaiveDate};
@@ -41,6 +43,9 @@ enum Cmd {
     /// Open the desktop window
     #[cfg(feature = "gui")]
     Gui,
+    /// Show a tray icon with what is running, start/stop, and the window
+    #[cfg(feature = "tray")]
+    Tray,
     /// Add a retroactive session (closed, explicit times)
     Add {
         /// Activity name (created if new)
@@ -115,6 +120,8 @@ fn run() -> Result<()> {
         Cmd::Tui => tui::run(),
         #[cfg(feature = "gui")]
         Cmd::Gui => gui::run(db),
+        #[cfg(feature = "tray")]
+        Cmd::Tray => tray::run(db),
     }
 }
 
