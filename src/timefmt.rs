@@ -154,3 +154,46 @@ pub fn parse_hm_on(d: NaiveDate, s: &str) -> Option<i64> {
         .earliest()
         .map(|dt| dt.timestamp_millis())
 }
+
+/// A duration like `5m`, `90s`, `1h30m`, or a bare number of minutes, in
+/// milliseconds; None if malformed.
+pub fn parse_duration(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if let Ok(mins) = s.parse::<i64>() {
+        return (mins >= 0).then_some(mins * 60_000);
+    }
+    let (mut total, mut num, mut parts) = (0i64, String::new(), 0);
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+            continue;
+        }
+        let unit = match c {
+            'h' => 3_600_000,
+            'm' => 60_000,
+            's' => 1_000,
+            _ => return None,
+        };
+        total = total.checked_add(num.parse::<i64>().ok()?.checked_mul(unit)?)?;
+        num.clear();
+        parts += 1;
+    }
+    (num.is_empty() && parts > 0).then_some(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations() {
+        assert_eq!(parse_duration("5"), Some(300_000));
+        assert_eq!(parse_duration("5m"), Some(300_000));
+        assert_eq!(parse_duration("90s"), Some(90_000));
+        assert_eq!(parse_duration("1h30m"), Some(5_400_000));
+        assert_eq!(parse_duration("0"), Some(0));
+        for bad in ["", "m", "5x", "1h30", "-5", "5 m"] {
+            assert_eq!(parse_duration(bad), None, "{bad:?}");
+        }
+    }
+}

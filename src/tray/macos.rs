@@ -2,6 +2,11 @@
 //! on a winit event loop. Clicking it opens the menu, as is usual on macOS.
 //! While something runs, the item shows the longest-running activity's
 //! elapsed time next to the clock. No Dock icon.
+//!
+//! Time away comes from polling the HID idle time each tick, plus the
+//! tick's sleep check. A bare binary can't post notifications with buttons
+//! on macOS, so an offer to drop time away shows as `away 23m` in the menu
+//! bar until it is kept or dropped from the menu.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -9,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use enoch::db::Db;
+use enoch::timefmt::now_ms;
 use tray_icon::menu::{IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use winit::application::ApplicationHandler;
@@ -17,13 +23,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::window::WindowId;
 
+use super::away::Tracker;
 use super::{Action, Entry, Tray, clock_rgba, elapsed, summary};
 
 /// Icon size in pixels. The menu bar draws it 18 points tall, so this is
 /// sharp on Retina displays.
 const ICON_PX: u32 = 36;
 
-pub fn run(db: Db) -> Result<()> {
+pub fn run(db: Db, idle_after_ms: i64) -> Result<()> {
     let mut builder = EventLoop::<MenuEvent>::with_user_event();
     builder
         // A menu bar item only: no Dock icon or app menu.
@@ -41,6 +48,8 @@ pub fn run(db: Db) -> Result<()> {
 
     let mut app = App {
         tray: Tray::new(db),
+        tracker: Tracker::new(idle_after_ms),
+        awake: Instant::now(),
         item: None,
         actions: HashMap::new(),
         failed: None,
@@ -56,6 +65,9 @@ pub fn run(db: Db) -> Result<()> {
 
 struct App {
     tray: Tray,
+    tracker: Tracker,
+    /// Origin of the monotonic clock for the tracker's sleep check.
+    awake: Instant,
     item: Option<TrayIcon>,
     /// What each item of the current menu does, by its id.
     actions: HashMap<MenuId, Action>,
@@ -92,7 +104,11 @@ impl App {
             Some(rgb) => item.set_icon(icon(rgb, true)),
             None => item.set_icon_templated(icon([0, 0, 0], false)),
         };
-        item.set_title(self.tray.view.running.first().map(|(_, m)| elapsed(*m)));
+        let title = match &self.tray.offer {
+            Some(o) => Some(format!("away {}", o.length())),
+            None => self.tray.view.running.first().map(|(_, m)| elapsed(*m)),
+        };
+        item.set_title(title);
         let _ = item.set_tooltip(Some(summary(&self.tray.view)));
     }
 }
@@ -110,7 +126,17 @@ impl ApplicationHandler<MenuEvent> for App {
                 true
             }
             StartCause::ResumeTimeReached { .. } => {
-                if self.tray.reload() {
+                let now = now_ms();
+                let mut changed = self.tray.reload();
+                let polled = (self.tracker.threshold() > 0)
+                    .then(|| self.tracker.idle_for(now, input_idle_ms()))
+                    .flatten();
+                let mono = self.awake.elapsed().as_millis() as i64;
+                let away = [polled, self.tracker.tick(now, mono)];
+                for a in away.into_iter().flatten() {
+                    changed |= self.tray.offer(a);
+                }
+                if changed {
                     self.refresh();
                 }
                 true
@@ -140,6 +166,18 @@ impl ApplicationHandler<MenuEvent> for App {
     fn resumed(&mut self, _: &ActiveEventLoop) {}
 
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+}
+
+/// Milliseconds since the last keyboard, mouse or trackpad input.
+fn input_idle_ms() -> i64 {
+    // kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType.
+    let secs = unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) };
+    (secs * 1000.0) as i64
 }
 
 fn icon(rgb: [u8; 3], filled: bool) -> Option<Icon> {

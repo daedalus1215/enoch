@@ -1107,7 +1107,10 @@ dependencies = [
  "ratatui",
  "rusqlite",
  "tray-icon",
+ "wayland-client",
+ "wayland-protocols",
  "winit",
+ "zbus",
 ]
 
 [[package]]

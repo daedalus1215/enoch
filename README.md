@@ -37,7 +37,7 @@ enoch export [--from D] [--to D]                      sessions as CSV to stdout
 enoch cat new NAME | rename OLD NEW | move ACT CAT | rm NAME
 enoch tui                                             open the interactive panel
 enoch gui                                             open the desktop window
-enoch tray                                            show a tray icon (menu bar on macOS)
+enoch tray [--idle-after DURATION]                    show a tray icon (menu bar on macOS)
 ```
 
 - `D` is `YYYY-MM-DD`. `enoch add` defaults to today; `--to` defaults to
@@ -125,6 +125,25 @@ of them), starts a recent one, opens the window, or quits the tray.
 It reads the same database every second, so it stays in step with the CLI,
 TUI and window.
 
+**Time away.** If you leave the computer while something is being
+tracked, the tray notices: after 5 minutes without keyboard or mouse
+input, or when the machine was asleep. When you're back it offers to
+take that stretch out:
+
+- **Drop it, keep tracking** — what was running loses the time away and
+  carries on from when you came back
+- **Drop it and stop** — what was running stops as of when you left
+- **Keep it** — count the time after all
+
+The offer sits at the top of the menu until you choose; on Linux it also
+comes as a notification with those buttons. Only the latest stretch is
+offered; a newer one replaces it and the older time is kept. Change the
+threshold with `enoch tray --idle-after 10m` (`0` turns it off). On Linux,
+noticing idleness needs a Wayland compositor with `ext-idle-notify-v1`
+(Hyprland, Sway, KDE…), and something holding an idle inhibitor, such as
+a playing video, counts as you being there; on X11 or other compositors
+only sleep is noticed.
+
 **Linux** — any StatusNotifierItem host works: Waybar's `tray` module, the
 Omarchy shell, KDE… Hover for what is running and for how long; left
 click opens the window (`enoch gui`). To start it with your session, add
@@ -132,7 +151,8 @@ it to your compositor's autostart, e.g. for Hyprland `exec-once = enoch
 tray` (or `hl.exec_cmd("enoch tray")` in a Lua config).
 
 **macOS** — the clock sits in the menu bar, next to the elapsed time of the
-longest-running activity; click it for the menu. There is no Dock icon.
+longest-running activity (or `away 23m` while an offer to drop time away
+waits); click it for the menu. There is no Dock icon.
 To start it at login, save this as
 `~/Library/LaunchAgents/enoch.tray.plist` (with the path to your binary)
 and run

@@ -1,23 +1,53 @@
 //! StatusNotifierItem backend (Linux, BSDs): the tray over D-Bus, for
 //! Waybar's tray, the Omarchy shell, KDE and other SNI hosts. Left click
 //! opens the window; the menu is the shared one.
+//!
+//! Time away comes from the Wayland idle probe and the tick's sleep check;
+//! an offer to drop it also goes out as a notification, whose buttons act
+//! like the menu's.
 
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use enoch::db::Db;
+use enoch::timefmt::now_ms;
 use ksni::blocking::TrayMethods;
 use ksni::menu::{StandardItem, SubMenu};
 use ksni::{Icon, MenuItem, ToolTip};
 
-use super::{Entry, Tray, View, clock_rgba, summary};
+use super::away::Tracker;
+use super::notify::Notifier;
+use super::wayland::{self, Signal};
+use super::{Action, Entry, Tray, View, clock_rgba, summary};
 
 /// Idle icon color.
 const IDLE_RGB: [u8; 3] = [200, 200, 200];
 
-pub fn run(db: Db) -> Result<()> {
+/// Notification buttons, as (action key, label).
+const OFFER_BUTTONS: [(&str, &str); 3] = [
+    ("drop", "Drop it"),
+    ("stop", "Drop and stop"),
+    ("keep", "Keep it"),
+];
+
+pub fn run(db: Db, idle_after_ms: i64) -> Result<()> {
+    let mut tracker = Tracker::new(idle_after_ms);
+    let (tx, idle) = mpsc::channel();
+    if tracker.threshold() > 0
+        && let Err(e) = wayland::watch(tracker.threshold(), tx)
+    {
+        eprintln!("enoch tray: no idle detection, only sleep: {e:#}");
+    }
+    let notifier = Notifier::new()
+        .inspect_err(|e| eprintln!("enoch tray: no notifications: {e:#}"))
+        .ok();
+
     // Menu actions run on the tray's own thread, with their own connection.
-    let tray = SniTray(Tray::new(Db::open()?));
+    let tray = SniTray {
+        tray: Tray::new(Db::open()?),
+        note: None,
+    };
     // Keep running if no tray host is up yet (e.g. started before the bar
     // at login); the icon appears once one registers.
     let handle = tray
@@ -25,24 +55,99 @@ pub fn run(db: Db) -> Result<()> {
         .spawn()
         .context("starting the tray icon over D-Bus")?;
 
+    if let Some(n) = &notifier {
+        let handle = handle.clone();
+        let listening = n.on_action(move |id, key| {
+            let action = match key.as_str() {
+                "drop" => Action::DropAway,
+                "stop" => Action::DropAwayAndStop,
+                "keep" => Action::KeepAway,
+                _ => return,
+            };
+            handle.update(|t| {
+                if t.note == Some(id) {
+                    // The server closes it on an action.
+                    t.note = None;
+                    t.tray.apply(&action);
+                }
+            });
+        });
+        if let Err(e) = listening {
+            eprintln!("enoch tray: notification buttons won't work: {e:#}");
+        }
+    }
+
+    let awake = Instant::now();
     loop {
         std::thread::sleep(Duration::from_secs(1));
+        let mut stretches: Vec<_> = idle
+            .try_iter()
+            .filter_map(|s| match s {
+                Signal::Idle(since) => {
+                    tracker.idle(since);
+                    None
+                }
+                Signal::Active(at) => tracker.active(at),
+            })
+            .collect();
+        stretches.extend(tracker.tick(now_ms(), awake.elapsed().as_millis() as i64));
         let next = View::load(&db);
+
         // ksni diffs the icon, tooltip and menu itself before signalling.
-        match handle.update(|t| {
-            t.0.show(next);
-            t.0.quit
-        }) {
-            Some(false) => {}
-            // Quit chosen, or the service ended.
-            Some(true) | None => break,
+        let Some(tick) = handle.update(|t| {
+            t.tray.show(next);
+            let offered = stretches.into_iter().fold(false, |o, a| t.tray.offer(a) || o);
+            Tick {
+                quit: t.tray.quit,
+                note: t.note,
+                // Resolved from the menu: the notification can go.
+                stale: t.note.filter(|_| t.tray.offer.is_none()),
+                offer: offered.then(|| t.tray.offer.as_ref().map(|o| o.text())).flatten(),
+            }
+        }) else {
+            break; // The service ended.
+        };
+        if tick.quit {
+            break;
         }
+        if let Some(n) = &notifier {
+            if let Some(id) = tick.stale {
+                n.close(id);
+                handle.update(|t| t.note = t.note.filter(|&n| n != id));
+            }
+            if let Some((title, body)) = tick.offer {
+                match n.show(tick.note.unwrap_or(0), &title, &body, &OFFER_BUTTONS) {
+                    Ok(id) => {
+                        handle.update(|t| t.note = Some(id));
+                    }
+                    Err(e) => eprintln!("enoch tray: {e:#}"),
+                }
+            }
+        }
+    }
+    if let (Some(n), Some(Some(id))) = (&notifier, handle.update(|t| t.note)) {
+        n.close(id);
     }
     handle.shutdown().wait();
     Ok(())
 }
 
-struct SniTray(Tray);
+/// What the loop learns from one update of the tray.
+struct Tick {
+    quit: bool,
+    /// The notification showing an offer, if any.
+    note: Option<u32>,
+    /// A notification whose offer was resolved from the menu.
+    stale: Option<u32>,
+    /// A new offer to notify about, as title and body.
+    offer: Option<(String, String)>,
+}
+
+struct SniTray {
+    tray: Tray,
+    /// The notification showing the current offer, if any.
+    note: Option<u32>,
+}
 
 impl ksni::Tray for SniTray {
     fn id(&self) -> String {
@@ -54,7 +159,7 @@ impl ksni::Tray for SniTray {
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
-        let rgb = self.0.icon_rgb();
+        let rgb = self.tray.icon_rgb();
         [22, 32, 48]
             .iter()
             .map(|&s| Icon {
@@ -68,7 +173,7 @@ impl ksni::Tray for SniTray {
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "enoch".into(),
-            description: summary(&self.0.view),
+            description: summary(&self.tray.view),
             ..Default::default()
         }
     }
@@ -76,11 +181,11 @@ impl ksni::Tray for SniTray {
     /// Left click opens the window.
     fn activate(&mut self, _x: i32, _y: i32) {
         #[cfg(feature = "gui")]
-        self.0.apply(&super::Action::OpenWindow);
+        self.tray.apply(&Action::OpenWindow);
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        self.0.menu().iter().map(to_ksni).collect()
+        self.tray.menu().iter().map(to_ksni).collect()
     }
 
     /// The host went away (e.g. the bar restarted): keep running so the
@@ -104,7 +209,7 @@ fn to_ksni(e: &Entry) -> MenuItem<SniTray> {
                 ..Default::default()
             };
             if let Some(a) = action.clone() {
-                item.activate = Box::new(move |t: &mut SniTray| t.0.apply(&a));
+                item.activate = Box::new(move |t: &mut SniTray| t.tray.apply(&a));
             }
             item.into()
         }

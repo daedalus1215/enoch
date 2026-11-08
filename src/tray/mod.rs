@@ -14,25 +14,37 @@
 //! recent ones, and opens the window. Backends re-read the database once a
 //! second, so starts and stops made anywhere else (CLI, TUI, window) show up
 //! here too.
+//!
+//! The tray also notices time away from the computer (see `away`): after a
+//! stretch away while something was tracked, it offers to take that time
+//! out, in the menu and, on Linux, in a notification.
 
+mod away;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(not(target_os = "macos"))]
+mod notify;
+#[cfg(not(target_os = "macos"))]
 mod sni;
+#[cfg(not(target_os = "macos"))]
+mod wayland;
 
 use anyhow::Result;
+use away::Away;
 use enoch::db::Db;
 use enoch::palette;
-use enoch::timefmt::{fmt_short, now_ms};
+use enoch::timefmt::{fmt_range, fmt_short, now_ms};
 
 /// How many not-running activities the Start submenu offers.
 const RECENT: usize = 12;
 
-pub fn run(db: Db) -> Result<()> {
+/// Run the tray. After `idle_after_ms` without input (0: never), time away
+/// counts as away and the tray offers to drop it.
+pub fn run(db: Db, idle_after_ms: i64) -> Result<()> {
     #[cfg(target_os = "macos")]
-    return macos::run(db);
+    return macos::run(db, idle_after_ms);
     #[cfg(not(target_os = "macos"))]
-    return sni::run(db);
+    return sni::run(db, idle_after_ms);
 }
 
 /// What the tray shows. Rebuilt every second; elapsed times are whole
@@ -77,6 +89,42 @@ enum Action {
     #[cfg(feature = "gui")]
     OpenWindow,
     Quit,
+    /// Take the offered stretch away out of what was tracked; what was
+    /// still running carries on.
+    DropAway,
+    /// Take it out and stop what was running then, as of leaving.
+    DropAwayAndStop,
+    /// Count it after all.
+    KeepAway,
+}
+
+/// A stretch away while something was tracked, waiting for the user to
+/// keep or drop it.
+#[derive(Clone, Debug, PartialEq)]
+struct Offer {
+    away: Away,
+    /// What was running when the user left.
+    names: Vec<String>,
+}
+
+impl Offer {
+    /// `23m`.
+    fn length(&self) -> String {
+        fmt_short(self.away.to - self.away.from)
+    }
+
+    /// Notification title and body.
+    #[cfg(not(target_os = "macos"))]
+    fn text(&self) -> (String, String) {
+        (
+            format!("Away for {}", self.length()),
+            format!(
+                "{} kept running {}. Take that time out?",
+                self.names.join(", "),
+                fmt_range(self.away.from, self.away.to)
+            ),
+        )
+    }
 }
 
 /// One menu entry, before a backend turns it into its own kind of item.
@@ -133,6 +181,9 @@ struct Tray {
     error: Option<String>,
     /// Set by the Quit item; the backend's loop ends when it sees it.
     quit: bool,
+    /// The latest stretch away not yet kept or dropped. A newer one
+    /// replaces it, keeping the older stretch's time.
+    offer: Option<Offer>,
 }
 
 impl Tray {
@@ -144,6 +195,7 @@ impl Tray {
             window: None,
             error: None,
             quit: false,
+            offer: None,
         };
         t.reload();
         t
@@ -191,6 +243,29 @@ impl Tray {
             #[cfg(feature = "gui")]
             Action::OpenWindow => self.open_window(),
             Action::Quit => self.quit = true,
+            Action::DropAway | Action::DropAwayAndStop => {
+                let Some(o) = self.offer.take() else { return };
+                let resume = *action == Action::DropAway;
+                let r = self.db.cut_away(o.away.from, o.away.to, resume).map(drop);
+                self.after(r);
+            }
+            Action::KeepAway => self.offer = None,
+        }
+    }
+
+    /// Offer to drop `away` if anything was tracked when it began; true if
+    /// it was offered.
+    fn offer(&mut self, away: Away) -> bool {
+        match self.db.tracked_at(away.from) {
+            Ok(names) if !names.is_empty() => {
+                self.offer = Some(Offer { away, names });
+                true
+            }
+            Ok(_) => false,
+            Err(e) => {
+                self.error = Some(format!("{e:#}"));
+                false
+            }
         }
     }
 
@@ -232,6 +307,18 @@ impl Tray {
         let mut m = Vec::new();
         if let Some(e) = &self.error {
             m.push(Entry::label(format!("error: {e}")));
+            m.push(Entry::Separator);
+        }
+
+        if let Some(o) = &self.offer {
+            m.push(Entry::label(format!(
+                "Away {} ({})",
+                o.length(),
+                fmt_range(o.away.from, o.away.to)
+            )));
+            m.push(Entry::item("Drop it, keep tracking", Action::DropAway));
+            m.push(Entry::item("Drop it and stop", Action::DropAwayAndStop));
+            m.push(Entry::item("Keep it", Action::KeepAway));
             m.push(Entry::Separator);
         }
 
@@ -420,6 +507,55 @@ mod tests {
         assert!(a.contains(&Action::StopAll));
         // No Start submenu when nothing else exists.
         assert!(!m.iter().any(|e| matches!(e, Entry::Submenu { .. })));
+    }
+
+    #[test]
+    fn away_is_offered_only_when_tracking() {
+        let mut t = tray(View::default());
+        assert!(!t.offer(Away { from: 1_000, to: 2_000 }));
+        assert_eq!(t.offer, None);
+
+        t.db.start("coding").unwrap();
+        let started = t.db.running().unwrap()[0].started_at;
+        let away = Away {
+            from: started + 10_000,
+            to: started + 20_000,
+        };
+        assert!(t.offer(away));
+        assert_eq!(t.offer.as_ref().unwrap().names, vec!["coding".to_string()]);
+        let m = t.menu();
+        assert!(matches!(&m[0], Entry::Item { label, action: None, .. } if label.starts_with("Away 10s")));
+        let a = actions(&m);
+        assert_eq!(&a[..3], &[Action::DropAway, Action::DropAwayAndStop, Action::KeepAway]);
+
+        t.apply(&Action::KeepAway);
+        assert_eq!(t.offer, None);
+        assert!(!actions(&t.menu()).contains(&Action::DropAway));
+    }
+
+    #[test]
+    fn dropping_away_cuts_the_session() {
+        let mut t = tray(View::default());
+        t.db.start("coding").unwrap();
+        let started = t.db.running().unwrap()[0].started_at;
+        let away = Away {
+            from: started + 1_000,
+            to: started + 2_000,
+        };
+        assert!(t.offer(away));
+        t.apply(&Action::DropAway);
+        assert_eq!(t.offer, None);
+        let r = t.db.running().unwrap();
+        assert_eq!(r[0].started_at, away.to);
+
+        assert!(t.offer(Away {
+            from: away.to + 1_000,
+            to: away.to + 2_000,
+        }));
+        t.apply(&Action::DropAwayAndStop);
+        assert!(t.db.running().unwrap().is_empty());
+        // Nothing offered: dropping is a no-op.
+        t.apply(&Action::DropAway);
     }
 
     #[test]

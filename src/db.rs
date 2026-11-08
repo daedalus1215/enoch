@@ -474,6 +474,60 @@ impl Db {
         }
     }
 
+    /// Activities with a session running at `at` (started before it, not
+    /// ended by then), in session start order.
+    pub fn tracked_at(&self, at: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.name
+             FROM sessions s
+             JOIN activities a ON a.id = s.activity_id
+             WHERE s.started_at < ?1 AND (s.ended_at IS NULL OR s.ended_at > ?1)
+             ORDER BY s.started_at",
+        )?;
+        let rows = stmt.query_map(params![at], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// Take [from, to), time spent away from the computer, out of every
+    /// session running at `from`. With `resume`, a session that went on
+    /// past `to` carries on from `to` (still running if it was); without,
+    /// each one ends at `from`. Returns the activities cut, as
+    /// [`tracked_at`](Self::tracked_at) would.
+    pub fn cut_away(&self, from: i64, to: i64, resume: bool) -> Result<Vec<String>> {
+        if to <= from {
+            bail!("end must be after start");
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let mut found: Vec<(i64, i64, String, Option<i64>)> = Vec::new();
+        {
+            let mut stmt = tx.prepare(
+                "SELECT s.id, s.activity_id, a.name, s.ended_at
+                 FROM sessions s
+                 JOIN activities a ON a.id = s.activity_id
+                 WHERE s.started_at < ?1 AND (s.ended_at IS NULL OR s.ended_at > ?1)
+                 ORDER BY s.started_at",
+            )?;
+            let rows = stmt.query_map(params![from], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?;
+            for row in rows {
+                found.push(row?);
+            }
+        }
+        for (id, aid, _, ended) in &found {
+            tx.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", params![from, id])?;
+            let went_on = ended.is_none_or(|e| e > to);
+            if resume && went_on {
+                tx.execute(
+                    "INSERT INTO sessions (activity_id, started_at, ended_at) VALUES (?, ?, ?)",
+                    params![aid, to, ended],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(found.into_iter().map(|(_, _, name, _)| name).collect())
+    }
+
     /// Activity names for completion, grouped by category then name.
     pub fn names(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
@@ -729,5 +783,83 @@ mod tests {
         let s = &db.sessions_in(0, i64::MAX, &Scope::All).unwrap()[0];
         assert_eq!((s.name.as_str(), s.started_at, s.ended_at), ("write", 2_000, Some(3_000)));
         assert!(db.update_session(id, "write", 3_000, 3_000).is_err());
+    }
+
+    /// A session still running, started at `start`.
+    fn open_session(db: &Db, name: &str, start: i64) {
+        let aid = db.activity_id_or_create(name).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO sessions (activity_id, started_at) VALUES (?, ?)",
+                params![aid, start],
+            )
+            .unwrap();
+    }
+
+    fn spans(db: &Db) -> Vec<(String, i64, Option<i64>)> {
+        db.sessions_in(0, i64::MAX, &Scope::All)
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.name, s.started_at, s.ended_at))
+            .collect()
+    }
+
+    #[test]
+    fn tracked_at_is_what_ran_then() {
+        let db = mem();
+        open_session(&db, "code", 1_000);
+        db.add_session("tea", 500, 1_500).unwrap();
+        db.add_session("read", 3_000, 4_000).unwrap();
+        assert_eq!(db.tracked_at(1_200).unwrap(), vec!["tea", "code"]);
+        // Running from 1000 on; tea ended at 1500, read not started.
+        assert_eq!(db.tracked_at(2_000).unwrap(), vec!["code"]);
+        assert!(db.tracked_at(1_000).unwrap().contains(&"tea".to_string()));
+    }
+
+    #[test]
+    fn cut_away_resumes_a_running_session() {
+        let db = mem();
+        open_session(&db, "code", 1_000);
+        assert_eq!(db.cut_away(2_000, 3_000, true).unwrap(), vec!["code"]);
+        assert_eq!(
+            spans(&db),
+            vec![("code".into(), 1_000, Some(2_000)), ("code".into(), 3_000, None)]
+        );
+        assert_eq!(db.running().unwrap()[0].started_at, 3_000);
+    }
+
+    #[test]
+    fn cut_away_can_stop_instead() {
+        let db = mem();
+        open_session(&db, "code", 1_000);
+        db.cut_away(2_000, 3_000, false).unwrap();
+        assert_eq!(spans(&db), vec![("code".into(), 1_000, Some(2_000))]);
+        assert!(db.running().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cut_away_splits_or_trims_closed_sessions() {
+        let db = mem();
+        // Went on past the return: split around the gap.
+        db.add_session("long", 1_000, 4_000).unwrap();
+        // Ended while away: trimmed back to when the user left.
+        db.add_session("short", 1_500, 2_500).unwrap();
+        // Untouched: over before, or started after leaving.
+        db.add_session("before", 100, 900).unwrap();
+        db.add_session("after", 2_200, 2_400).unwrap();
+        let mut cut = db.cut_away(2_000, 3_000, true).unwrap();
+        cut.sort();
+        assert_eq!(cut, vec!["long", "short"]);
+        assert_eq!(
+            spans(&db),
+            vec![
+                ("before".into(), 100, Some(900)),
+                ("long".into(), 1_000, Some(2_000)),
+                ("short".into(), 1_500, Some(2_000)),
+                ("after".into(), 2_200, Some(2_400)),
+                ("long".into(), 3_000, Some(4_000)),
+            ]
+        );
+        assert!(db.cut_away(3_000, 3_000, true).is_err());
     }
 }
