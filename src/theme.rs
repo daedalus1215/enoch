@@ -3,7 +3,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
-use crate::timefmt::now_ms;
+use enoch::timefmt::now_ms;
 
 /// Accent: selection, active mode, highlights.
 pub const ACCENT: Color = Color::Cyan;
@@ -51,21 +51,8 @@ pub fn pulse(color: Color) -> Color {
 
 /// Stable, distinguishable color per activity name.
 pub fn activity_color(name: &str) -> Color {
-    let mut h: u64 = 5381;
-    for b in name.to_lowercase().bytes() {
-        h = h.wrapping_mul(33).wrapping_add(b as u64);
-    }
-    const PALETTE: [Color; 8] = [
-        Color::Rgb(229, 92, 92),
-        Color::Rgb(255, 153, 102),
-        Color::Rgb(255, 212, 76),
-        Color::Rgb(128, 203, 110),
-        Color::Rgb(80, 180, 229),
-        Color::Rgb(156, 165, 255),
-        Color::Rgb(204, 153, 255),
-        Color::Rgb(255, 121, 198),
-    ];
-    PALETTE[(h % PALETTE.len() as u64) as usize]
+    let [r, g, b] = enoch::palette::activity_rgb(name);
+    Color::Rgb(r, g, b)
 }
 
 /// Filled/empty bar of `width` chars representing `ms` out of `max_ms`.

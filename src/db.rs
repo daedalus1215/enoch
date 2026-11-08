@@ -116,13 +116,20 @@ fn db_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".local/share/enoch/enoch.db")
 }
 impl Db {
+    /// Open (creating if needed) the database at the standard data path.
     pub fn open() -> Result<Self> {
         let path = db_path();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        let conn = Connection::open(&path)
+        Self::open_at(&path)
+    }
+
+    /// Open (creating if needed) the database file at `path`; its directory
+    /// must exist. `":memory:"` gives a private in-memory database.
+    pub fn open_at(path: &std::path::Path) -> Result<Self> {
+        let conn = Connection::open(path)
             .with_context(|| format!("opening {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", 1)?;
@@ -670,5 +677,57 @@ impl Db {
             params![cid, aid],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mem() -> Db {
+        Db::open_at(std::path::Path::new(":memory:")).expect("in-memory db")
+    }
+
+    #[test]
+    fn start_stop_roundtrip() {
+        let db = mem();
+        assert!(matches!(db.start("coding").unwrap(), StartOutcome::StartedNew));
+        assert!(matches!(db.start("Coding").unwrap(), StartOutcome::AlreadyRunning));
+        assert_eq!(db.running().unwrap().len(), 1);
+        let stopped = db.stop(&[]).unwrap();
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(stopped[0].name, "coding");
+        assert!(db.running().unwrap().is_empty());
+        assert!(matches!(db.start("coding").unwrap(), StartOutcome::Started));
+    }
+
+    #[test]
+    fn totals_clip_to_window() {
+        let db = mem();
+        db.add_session("read", 1_000, 5_000).unwrap();
+        let t = db.totals(2_000, 4_000, &Scope::All).unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].ms, 2_000);
+    }
+
+    #[test]
+    fn running_sessions_cannot_be_edited() {
+        let db = mem();
+        db.start("coding").unwrap();
+        let s = &db.sessions_in(0, i64::MAX, &Scope::All).unwrap()[0];
+        assert!(s.ended_at.is_none());
+        assert!(db.update_session(s.id, "coding", 0, 1_000).is_err());
+        assert!(db.delete_session(s.id).is_err());
+    }
+
+    #[test]
+    fn update_session_moves_and_retimes() {
+        let db = mem();
+        db.add_session("read", 1_000, 5_000).unwrap();
+        let id = db.sessions_in(0, i64::MAX, &Scope::All).unwrap()[0].id;
+        db.update_session(id, "write", 2_000, 3_000).unwrap();
+        let s = &db.sessions_in(0, i64::MAX, &Scope::All).unwrap()[0];
+        assert_eq!((s.name.as_str(), s.started_at, s.ended_at), ("write", 2_000, Some(3_000)));
+        assert!(db.update_session(id, "write", 3_000, 3_000).is_err());
     }
 }
