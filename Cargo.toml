@@ -32,7 +32,8 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"], option
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"], optional = true }
 
 # macOS: a menu bar item, driven by a winit event loop (the same winit the
-# window uses).
+# window uses). The window uses winit directly too, to be a regular app
+# even inside enoch.app.
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.26", default-features = false, optional = true }
 winit = { version = "0.30", default-features = false, optional = true }
@@ -50,7 +51,7 @@ strip = true
 default = ["gui", "tray"]
 # Build without these for a lean CLI + TUI: cargo build --no-default-features
 # Desktop window (`enoch gui`).
-gui = ["dep:eframe"]
+gui = ["dep:eframe", "dep:winit"]
 # Tray icon (`enoch tray`): StatusNotifierItem hosts (Waybar, KDE, ...) on
 # Linux, the menu bar on macOS.
 tray = [

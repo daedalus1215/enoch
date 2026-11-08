@@ -14,7 +14,7 @@ use enoch::timefmt::{
 };
 
 #[derive(Parser)]
-#[command(name = "enoch", about = "Track how long you have been doing activities")]
+#[command(name = "enoch", version, about = "Track how long you have been doing activities")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -50,7 +50,7 @@ enum Cmd {
         /// Time without input that counts as away, after which the tray
         /// offers to drop it from what was running (e.g. 5m, 90s, 1h30m;
         /// 0 turns this off)
-        #[arg(long, value_name = "DURATION", default_value = "5m", value_parser = parse_idle_after)]
+        #[arg(long, value_name = "DURATION", default_value = IDLE_AFTER, value_parser = parse_idle_after)]
         idle_after: i64,
     },
     /// Add a retroactive session (closed, explicit times)
@@ -105,7 +105,15 @@ enum CatCmd {
     },
 }
 
+/// `enoch tray --idle-after` unless told otherwise.
+#[cfg(all(feature = "tray", unix))]
+const IDLE_AFTER: &str = "5m";
+
 fn main() {
+    #[cfg(all(target_os = "macos", feature = "tray"))]
+    if app::opened() {
+        app::log_to_file();
+    }
     if let Err(e) = run() {
         eprintln!("enoch: {e:#}");
         std::process::exit(1);
@@ -115,7 +123,7 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let db = Db::open()?;
-    match cli.command.unwrap_or(Cmd::Tui) {
+    match cli.command.unwrap_or_else(default_cmd) {
         Cmd::Start { names } => cmd_start(&db, &names),
         Cmd::Stop { names } => cmd_stop(&db, &names),
         Cmd::Now => cmd_now(&db),
@@ -129,6 +137,60 @@ fn run() -> Result<()> {
         Cmd::Gui => gui::run(db),
         #[cfg(all(feature = "tray", unix))]
         Cmd::Tray { idle_after } => tray::run(db, idle_after),
+    }
+}
+
+/// What plain `enoch` does: the TUI, or the menu bar item when opened as
+/// the macOS app.
+fn default_cmd() -> Cmd {
+    #[cfg(all(target_os = "macos", feature = "tray"))]
+    if app::opened() {
+        return Cmd::Tray {
+            idle_after: parse_idle_after(IDLE_AFTER).expect("the default parses"),
+        };
+    }
+    Cmd::Tui
+}
+
+/// Running as enoch.app (see macos/ and the README).
+#[cfg(all(target_os = "macos", feature = "tray"))]
+mod app {
+    use std::io::IsTerminal;
+
+    /// Opened from Finder, the Dock, Login Items or `open`, rather than run
+    /// in a terminal: the binary sits in an app bundle and has no terminal.
+    /// (The same binary linked onto the PATH and run in a terminal is not.)
+    pub fn opened() -> bool {
+        let in_bundle = std::env::current_exe()
+            .is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"));
+        in_bundle && !std::io::stdin().is_terminal() && !std::io::stderr().is_terminal()
+    }
+
+    /// Send stderr (warnings, errors, panics; also those of the window it
+    /// opens) to ~/Library/Logs/enoch.log, which Console.app shows, since an
+    /// app has nowhere to print them.
+    pub fn log_to_file() {
+        use std::os::fd::AsRawFd;
+        unsafe extern "C" {
+            fn dup2(from: i32, to: i32) -> i32;
+        }
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let path = std::path::Path::new(&home).join("Library/Logs/enoch.log");
+        let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+            return;
+        };
+        // SAFETY: both are open descriptors; fd 2 keeps its own reference
+        // to the file once `file` is closed.
+        if unsafe { dup2(file.as_raw_fd(), 2) } < 0 {
+            return;
+        }
+        eprintln!(
+            "{} enoch {} opened as an app",
+            enoch::timefmt::iso_local(enoch::timefmt::now_ms()),
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }
 

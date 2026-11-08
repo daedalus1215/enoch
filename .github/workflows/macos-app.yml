@@ -1,0 +1,54 @@
+name: macOS app
+
+on:
+  # A version tag builds the app and attaches it to a GitHub release.
+  push:
+    tags: ["v*"]
+  # Check the packaging whenever it, or the code that runs as the app, changes.
+  pull_request:
+    paths:
+      - "macos/**"
+      - "src/main.rs"
+      - "src/tray/**"
+      - ".github/workflows/macos-app.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: macos/build-app.sh
+      - name: Smoke test
+        run: |
+          bin=dist/enoch.app/Contents/MacOS/enoch
+          lipo -archs "$bin"
+          "$bin" --version
+          # Opened like a user would: it should start the menu bar item and
+          # keep running.
+          open dist/enoch.app
+          sleep 8
+          cat ~/Library/Logs/enoch.log || true
+          pgrep -x enoch
+          pkill -x enoch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: enoch-macos
+          path: dist/enoch-macos.zip
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/enoch-macos.zip
+          --title "$GITHUB_REF_NAME" --generate-notes

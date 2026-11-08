@@ -31,6 +31,13 @@ pub fn run(db: Db) -> Result<()> {
             .with_app_id("enoch")
             .with_inner_size([960.0, 640.0])
             .with_min_inner_size([560.0, 360.0]),
+        // A regular app with a Dock icon and menu, even inside enoch.app,
+        // whose Info.plist makes the menu bar item an agent (LSUIElement).
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(|b| {
+            use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+            b.with_activation_policy(ActivationPolicy::Regular);
+        })),
         ..Default::default()
     };
     eframe::run_native(
