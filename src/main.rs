@@ -1,12 +1,10 @@
-mod db;
 mod theme;
-mod timefmt;
 mod tui;
 use anyhow::{Context, Result};
 use chrono::{Local, NaiveDate};
 use clap::{Parser, Subcommand};
-use db::{Db, Scope, StartOutcome};
-use timefmt::{
+use enoch::db::{self, Db, Scope, StartOutcome};
+use enoch::timefmt::{
     day_bounds, fmt_clock, fmt_range, fmt_short, iso_local, local_midnight_ms, now_ms, parse_hm_on,
     week_bounds,
 };

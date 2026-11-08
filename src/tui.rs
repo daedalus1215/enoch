@@ -18,9 +18,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{block::Title, Block, BorderType, Borders, List, ListItem, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use crate::db::{Db, Running, Scope, SessionRow, StartOutcome, Total};
+use enoch::db::{Db, Running, Scope, SessionRow, StartOutcome, Total};
 use crate::theme;
-use crate::timefmt::{
+use enoch::timefmt::{
     date_of, day_bounds, fmt_clock, fmt_day_title, fmt_hm, fmt_month, fmt_range, fmt_short,
     local_midnight_ms, month_bounds, now_ms, parse_hm_on, week_bounds,
 };
