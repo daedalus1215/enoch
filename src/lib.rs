@@ -3,4 +3,5 @@
 
 pub mod db;
 pub mod palette;
+pub mod stats;
 pub mod timefmt;

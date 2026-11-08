@@ -1,17 +1,19 @@
 //! Desktop window: live timers, start/stop and per-period totals (Live),
-//! and a drag-to-edit timeline of one day's sessions (Day).
+//! a drag-to-edit timeline of one day's sessions (Day), and a year of
+//! history as a heatmap, months and a breakdown (Stats).
 //!
 //! Reads the same SQLite file as the CLI and TUI and re-queries it every
 //! second, so `enoch start` in a shell shows up here without a restart.
 
 mod day;
+mod stats;
 mod style;
 mod timeline;
 
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use chrono::Local;
+use chrono::{Local, NaiveDate};
 use eframe::egui::{self, Align, Layout, RichText, Sense, Ui};
 use enoch::db::{Db, Running, Scope, StartOutcome, Total};
 use enoch::timefmt::{
@@ -100,6 +102,7 @@ impl Snapshot {
 enum Tab {
     Live,
     Day,
+    Stats,
 }
 
 /// Things the UI asked for this frame, applied once drawing is done.
@@ -120,6 +123,8 @@ enum Action {
         end: i64,
     },
     DeleteSession(i64),
+    /// Show this day in the Day tab.
+    OpenDay(NaiveDate),
 }
 
 struct Flash {
@@ -132,6 +137,7 @@ struct App {
     db: Db,
     tab: Tab,
     day: day::DayView,
+    stats: stats::StatsView,
     period: Period,
     snap: Snapshot,
     /// When `snap` was loaded; `None` forces a reload next frame.
@@ -147,6 +153,7 @@ impl App {
             db,
             tab: Tab::Live,
             day: day::DayView::new(),
+            stats: stats::StatsView::new(),
             period: Period::Today,
             snap: Snapshot::default(),
             loaded_at: None,
@@ -175,6 +182,11 @@ impl App {
                 Ok(s) => self.day.sessions = s,
                 Err(e) => self.error(e),
             }
+        }
+        if self.tab == Tab::Stats
+            && let Err(e) = self.stats.load(&self.db)
+        {
+            self.error(e);
         }
         self.loaded_at = Some(Instant::now());
     }
@@ -244,6 +256,10 @@ impl App {
                 Ok(()) => self.info("deleted session"),
                 Err(e) => self.error(e),
             },
+            Action::OpenDay(d) => {
+                self.day.set_day(d);
+                self.tab = Tab::Day;
+            }
         }
         self.loaded_at = None;
     }
@@ -263,6 +279,9 @@ impl App {
                     ui.weak(match self.tab {
                         Tab::Live => "type an activity and press Enter to start it",
                         Tab::Day => "Left / Right: previous / next day · T: today",
+                        Tab::Stats => {
+                            "click a day to see it · arrows move · Enter or double-click opens it in Day"
+                        }
                     });
                 }
             }
@@ -346,11 +365,14 @@ impl eframe::App for App {
                 for (tab, label, key) in [
                     (Tab::Live, "Live", egui::Key::Num1),
                     (Tab::Day, "Day", egui::Key::Num2),
+                    (Tab::Stats, "Stats", egui::Key::Num3),
                 ] {
-                    let shortcut = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, key));
+                    // Ctrl on Linux, Cmd on macOS; the tooltip says which.
+                    let keys = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key);
+                    let shortcut = ui.input_mut(|i| i.consume_shortcut(&keys));
                     let clicked = ui
                         .selectable_label(self.tab == tab, label)
-                        .on_hover_text(format!("Ctrl+{}", if tab == Tab::Live { 1 } else { 2 }))
+                        .on_hover_text(ui.ctx().format_shortcut(&keys))
                         .clicked();
                     if (clicked || shortcut) && self.tab != tab {
                         self.tab = tab;
@@ -371,6 +393,7 @@ impl eframe::App for App {
             .min_size(160.0)
             .show(ui, |ui| rail(ui, &self.snap, now, &mut actions));
         let shown_day = self.day.day;
+        let shown_year = self.stats.year;
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(4.0);
@@ -387,10 +410,11 @@ impl eframe::App for App {
                             self.snap.rail.iter().map(|(n, _)| n.clone()).collect();
                         day::show(ui, &mut self.day, &names, now, &mut actions);
                     }
+                    Tab::Stats => stats::show(ui, &mut self.stats, &self.snap.rail, &mut actions),
                 }
             });
         });
-        if self.day.day != shown_day {
+        if self.day.day != shown_day || self.stats.year != shown_year {
             self.loaded_at = None;
         }
 

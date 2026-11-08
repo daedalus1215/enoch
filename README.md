@@ -86,8 +86,8 @@ PROMPTS       tab complete · enter save · esc cancel
 
 ## The GUI
 
-`enoch gui` opens a desktop window over the same database, with two tabs
-(`Ctrl+1` / `Ctrl+2`).
+`enoch gui` opens a desktop window over the same database, with three tabs
+(`Ctrl+1` / `Ctrl+2` / `Ctrl+3`; `Cmd` on macOS).
 
 **Live**
 
@@ -110,6 +110,22 @@ PROMPTS       tab complete · enter save · esc cancel
 
 Running sessions are drawn up to now but, as in the TUI, can't be edited
 until stopped.
+
+**Stats** — a year at a glance:
+
+- totals: time tracked, active days, time per active day, the current and
+  longest streak of days in a row
+- a heatmap with one square per day, more strongly colored the more time
+  that day; hover for the day's total, click to list what you did,
+  double-click (or `Enter`) to open it in the Day tab. Arrow keys move the
+  selected day, `T` jumps to today
+- time per month, and a breakdown by category and activity
+- `Show` narrows everything to one category or activity (clicking a row in
+  the breakdown does the same; click it again for everything), and `in`
+  picks the last 12 months or a calendar year
+
+Sessions that run past midnight count on each day they touch, as in the
+Day tab.
 
 The window re-reads the database every second, so `enoch start` / `stop`
 from a shell shows up without a restart. On Wayland its app id is
