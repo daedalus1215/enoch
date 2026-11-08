@@ -166,7 +166,7 @@ pub fn show(
 
 fn header(ui: &mut Ui, view: &mut DayView, d0: i64, d1: i64, now: i64) {
     let total: i64 = view.sessions.iter().map(|s| clipped(s, d0, d1, now)).sum();
-    let typing = ui.ctx().egui_wants_keyboard_input();
+    let typing = !super::keys_free(ui);
     let (prev, next, today) = ui.input(|i| {
         (
             !typing && i.key_pressed(egui::Key::ArrowLeft),

@@ -95,6 +95,9 @@ PROMPTS       tab complete · enter save · esc cancel
   matching what you type appear as one-click buttons below it.
 - **Activities rail** — every activity grouped by category; ▶ starts it,
   ■ stops it, running ones show a filled dot and their elapsed time.
+  Right-click an activity to move it to another category (or a new one),
+  or a category heading to rename or delete it. Deleting a category keeps
+  its activities and their time; they just have no category.
 - **Running** — a live clock per running activity, with Stop / Stop all.
 - **Totals** — per-activity bars for today, this week, or all time.
 
@@ -122,7 +125,8 @@ until stopped.
 - time per month, and a breakdown by category and activity
 - `Show` narrows everything to one category or activity (clicking a row in
   the breakdown does the same; click it again for everything), and `in`
-  picks the last 12 months or a calendar year
+  picks the last 12 months or a calendar year. Right-clicking a row in the
+  breakdown gives the same category menu as the rail.
 
 Sessions that run past midnight count on each day they touch, as in the
 Day tab.

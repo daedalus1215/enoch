@@ -5,6 +5,7 @@
 //! Reads the same SQLite file as the CLI and TUI and re-queries it every
 //! second, so `enoch start` in a shell shows up here without a restart.
 
+mod categories;
 mod day;
 mod stats;
 mod style;
@@ -78,6 +79,8 @@ struct Snapshot {
     totals: Vec<Total>,
     /// Every activity with its category; the no-category group comes first.
     rail: Vec<(String, Option<String>)>,
+    /// Every category by name, including any without activities.
+    categories: Vec<String>,
 }
 
 impl Snapshot {
@@ -87,6 +90,7 @@ impl Snapshot {
             running: db.running()?,
             totals: db.totals(from, to, &Scope::All)?,
             rail: db.activity_index()?,
+            categories: db.category_names()?,
         })
     }
 
@@ -125,6 +129,21 @@ enum Action {
     DeleteSession(i64),
     /// Show this day in the Day tab.
     OpenDay(NaiveDate),
+    /// Put an activity in a category, or in none.
+    MoveActivity {
+        activity: String,
+        category: Option<String>,
+    },
+    CreateCategory {
+        name: String,
+        then_move: Option<String>,
+    },
+    RenameCategory {
+        old: String,
+        new: String,
+    },
+    DeleteCategory(String),
+    Dialog(categories::Dialog),
 }
 
 struct Flash {
@@ -145,6 +164,7 @@ struct App {
     start_text: String,
     focus_start: bool,
     flash: Option<Flash>,
+    dialog: Option<categories::Dialog>,
 }
 
 impl App {
@@ -160,6 +180,7 @@ impl App {
             start_text: String::new(),
             focus_start: true,
             flash: None,
+            dialog: None,
         }
     }
 
@@ -260,8 +281,50 @@ impl App {
                 self.day.set_day(d);
                 self.tab = Tab::Day;
             }
+            Action::MoveActivity { activity, category } => {
+                match self.db.set_activity_category(&activity, category.as_deref()) {
+                    Ok(()) => self.info(match category {
+                        Some(c) => format!("moved {activity} to {c}"),
+                        None => format!("{activity} has no category now"),
+                    }),
+                    Err(e) => self.error(e),
+                }
+            }
+            Action::CreateCategory { name, then_move } => {
+                let made = self.db.create_category(&name).and_then(|_| match &then_move {
+                    Some(a) => self.db.set_activity_category(a, Some(&name)),
+                    None => Ok(()),
+                });
+                match made {
+                    Ok(()) => self.info(match then_move {
+                        Some(a) => format!("made {name} and moved {a} to it"),
+                        None => format!("made category {name}"),
+                    }),
+                    Err(e) => self.error(e),
+                }
+            }
+            Action::RenameCategory { old, new } => match self.category(&old) {
+                Ok(id) => match self.db.rename_category(id, &new) {
+                    Ok(()) => self.info(format!("renamed {old} to {new}")),
+                    Err(e) => self.error(e),
+                },
+                Err(e) => self.error(e),
+            },
+            Action::DeleteCategory(name) => {
+                match self.category(&name).and_then(|id| self.db.delete_category(id)) {
+                    Ok(()) => self.info(format!("deleted category {name}")),
+                    Err(e) => self.error(e),
+                }
+            }
+            Action::Dialog(d) => self.dialog = Some(d),
         }
         self.loaded_at = None;
+    }
+
+    fn category(&self, name: &str) -> Result<i64> {
+        self.db
+            .category_id(name)?
+            .ok_or_else(|| anyhow::anyhow!("no such category: {name}"))
     }
 
     fn status_bar(&self, ui: &mut Ui) {
@@ -277,7 +340,9 @@ impl App {
                 }
                 _ => {
                     ui.weak(match self.tab {
-                        Tab::Live => "type an activity and press Enter to start it",
+                        Tab::Live => {
+                            "type an activity and press Enter to start it · right-click an activity or category to organize"
+                        }
                         Tab::Day => "Left / Right: previous / next day · T: today",
                         Tab::Stats => {
                             "click a day to see it · arrows move · Enter or double-click opens it in Day"
@@ -410,10 +475,17 @@ impl eframe::App for App {
                             self.snap.rail.iter().map(|(n, _)| n.clone()).collect();
                         day::show(ui, &mut self.day, &names, now, &mut actions);
                     }
-                    Tab::Stats => stats::show(ui, &mut self.stats, &self.snap.rail, &mut actions),
+                    Tab::Stats => stats::show(
+                        ui,
+                        &mut self.stats,
+                        &self.snap.rail,
+                        &self.snap.categories,
+                        &mut actions,
+                    ),
                 }
             });
         });
+        categories::show(ui.ctx(), &mut self.dialog, &mut actions);
         if self.day.day != shown_day || self.stats.year != shown_year {
             self.loaded_at = None;
         }
@@ -431,33 +503,64 @@ impl eframe::App for App {
     }
 }
 
+/// Whether a view may act on plain keys (arrows, Enter, T): not while
+/// typing into a field or while a dialog is open over the window.
+fn keys_free(ui: &Ui) -> bool {
+    !ui.ctx().egui_wants_keyboard_input() && ui.memory(|m| m.top_modal_layer().is_none())
+}
+
 /// Left rail: every activity grouped by category, with start/stop buttons.
+/// Right-clicking an activity or a heading opens its category menu.
 fn rail(ui: &mut Ui, snap: &Snapshot, now: i64, actions: &mut Vec<Action>) {
     ui.add_space(8.0);
     style::section(ui, "ACTIVITIES");
-    if snap.rail.is_empty() {
+    if snap.rail.is_empty() && snap.categories.is_empty() {
         ui.weak("none yet");
         return;
     }
+    // The no-category group first, then every category, empty ones too.
+    let members = |cat: Option<&str>| -> Vec<&String> {
+        snap.rail
+            .iter()
+            .filter(|(_, c)| c.as_deref() == cat)
+            .map(|(n, _)| n)
+            .collect()
+    };
+    let mut groups: Vec<(Option<&str>, Vec<&String>)> = Vec::new();
+    let unassigned = members(None);
+    if !unassigned.is_empty() {
+        groups.push((None, unassigned));
+    }
+    for c in &snap.categories {
+        groups.push((Some(c), members(Some(c))));
+    }
     egui::ScrollArea::vertical().show(ui, |ui| {
-        let mut group: Option<&Option<String>> = None;
-        for (name, cat) in &snap.rail {
-            if group != Some(cat) {
-                ui.add_space(6.0);
-                let label = cat.as_deref().unwrap_or("no category");
-                ui.label(
-                    RichText::new(label)
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
-                );
-                group = Some(cat);
+        for (cat, names) in groups {
+            ui.add_space(6.0);
+            let heading = RichText::new(cat.unwrap_or("no category"))
+                .small()
+                .color(ui.visuals().weak_text_color());
+            let resp = ui.add(egui::Label::new(heading).sense(Sense::click()));
+            categories::category_menu(&resp, cat, names.len(), actions);
+            if names.is_empty() {
+                ui.label(RichText::new("  no activities").small().italics().weak());
             }
-            rail_row(ui, name, snap.started_at(name), now, actions);
+            for name in names {
+                rail_row(ui, name, cat, snap, now, actions);
+            }
         }
     });
 }
 
-fn rail_row(ui: &mut Ui, name: &str, started: Option<i64>, now: i64, actions: &mut Vec<Action>) {
+fn rail_row(
+    ui: &mut Ui,
+    name: &str,
+    cat: Option<&str>,
+    snap: &Snapshot,
+    now: i64,
+    actions: &mut Vec<Action>,
+) {
+    let started = snap.started_at(name);
     let color = style::activity(name);
     // A fixed-height row: a bare right-to-left layout would claim all the
     // remaining height and center itself in it.
@@ -485,7 +588,8 @@ fn rail_row(ui: &mut Ui, name: &str, started: Option<i64>, now: i64, actions: &m
                 ui.painter()
                     .circle_stroke(r.center(), 3.5, egui::Stroke::new(1.5, color));
             }
-            ui.add(egui::Label::new(name).truncate());
+            let resp = ui.add(egui::Label::new(name).truncate().sense(Sense::click()));
+            categories::activity_menu(&resp, name, cat, &snap.categories, actions);
         });
     });
 }
@@ -581,4 +685,106 @@ fn totals(ui: &mut Ui, snap: &Snapshot, period: Period, actions: &mut Vec<Action
             ui.label(RichText::new(fmt_short(sum)).monospace().strong());
             ui.end_row();
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::categories::Dialog;
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    /// coding (in work) and guitar (no category), plus an empty category.
+    fn db() -> Db {
+        let db = Db::open_at(std::path::Path::new(":memory:")).unwrap();
+        db.add_session("coding", 1_000, 2_000).unwrap();
+        db.add_session("guitar", 3_000, 4_000).unwrap();
+        db.create_category("work").unwrap();
+        db.create_category("empty").unwrap();
+        db.set_activity_category("coding", Some("work")).unwrap();
+        db
+    }
+
+    #[test]
+    fn category_actions_change_the_database() {
+        let mut app = App::new(db());
+        app.apply(Action::CreateCategory {
+            name: "music".into(),
+            then_move: Some("guitar".into()),
+        });
+        app.apply(Action::RenameCategory {
+            old: "work".into(),
+            new: "job".into(),
+        });
+        app.apply(Action::DeleteCategory("empty".into()));
+        assert_eq!(
+            app.db.activity_index().unwrap(),
+            vec![
+                ("coding".to_string(), Some("job".to_string())),
+                ("guitar".to_string(), Some("music".to_string())),
+            ]
+        );
+        assert_eq!(app.db.category_names().unwrap(), vec!["job", "music"]);
+
+        app.apply(Action::MoveActivity {
+            activity: "guitar".into(),
+            category: None,
+        });
+        assert_eq!(app.db.activity_index().unwrap()[0], ("guitar".to_string(), None));
+
+        // A name already taken is reported, and nothing moves.
+        app.apply(Action::CreateCategory {
+            name: "JOB".into(),
+            then_move: Some("guitar".into()),
+        });
+        assert!(app.flash.as_ref().is_some_and(|f| f.error));
+        assert_eq!(app.db.activity_index().unwrap()[0], ("guitar".to_string(), None));
+    }
+
+    struct Rail {
+        snap: Snapshot,
+        actions: Vec<Action>,
+    }
+
+    fn rail_harness() -> Harness<'static, Rail> {
+        let snap = Snapshot::load(&db(), Period::Today).unwrap();
+        Harness::builder()
+            .with_size(egui::vec2(260.0, 500.0))
+            .build_ui_state(
+                |ui, r: &mut Rail| rail(ui, &r.snap, 0, &mut r.actions),
+                Rail {
+                    snap,
+                    actions: Vec::new(),
+                },
+            )
+    }
+
+    #[test]
+    fn right_clicking_an_activity_moves_it() {
+        let mut h = rail_harness();
+        h.get_by_label("guitar").click_secondary();
+        h.run();
+        h.get_by_label("Move to").click();
+        h.run();
+        // The menu's "work", not the rail's heading of that name.
+        h.get_by_role_and_label(egui::Role::Button, "work").click();
+        h.run();
+        assert!(matches!(
+            &h.state().actions[..],
+            [Action::MoveActivity { activity, category: Some(c) }] if activity == "guitar" && c == "work"
+        ));
+    }
+
+    #[test]
+    fn empty_categories_are_listed_and_can_be_deleted() {
+        let mut h = rail_harness();
+        assert!(h.query_by_label_contains("no activities").is_some());
+        h.get_by_label("empty").click_secondary();
+        h.run();
+        h.get_by_label("Delete…").click();
+        h.run();
+        assert!(matches!(
+            &h.state().actions[..],
+            [Action::Dialog(Dialog::Delete { name, members: 0 })] if name == "empty"
+        ));
+    }
 }

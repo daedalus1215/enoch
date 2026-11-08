@@ -19,7 +19,7 @@ use enoch::db::{Db, Scope, Total};
 use enoch::stats::{self, Ledger, Summary, Year};
 use enoch::timefmt::{date_of, day_bounds, fmt_hours, now_ms};
 
-use super::{Action, style};
+use super::{Action, categories, style};
 
 /// Heatmap and chart color when counting more than one activity; a single
 /// activity uses its own color.
@@ -108,6 +108,7 @@ pub fn show(
     ui: &mut Ui,
     view: &mut StatsView,
     rail: &[(String, Option<String>)],
+    all_categories: &[String],
     actions: &mut Vec<Action>,
 ) {
     // Forget a filter whose activity or category no longer exists.
@@ -168,13 +169,19 @@ pub fn show(
         },
     );
     let totals = view.ledger.totals(keep);
-    if let Some(f) = breakdown(ui, &totals, &cats, has_categories, &filter) {
+    let rows = Rows {
+        totals: &totals,
+        cats: &cats,
+        all_categories,
+        grouped: has_categories,
+    };
+    if let Some(f) = breakdown(ui, &rows, &filter, actions) {
         view.filter = f;
     }
 }
 
 fn keys(ui: &Ui, view: &mut StatsView, today: NaiveDate, actions: &mut Vec<Action>) {
-    if ui.ctx().egui_wants_keyboard_input() {
+    if !super::keys_free(ui) {
         return;
     }
     let (left, right, up, down, t, enter) = ui.input(|i| {
@@ -620,25 +627,38 @@ fn months_chart(ui: &mut Ui, months: &[(NaiveDate, i64)], sel: NaiveDate, base: 
     }
 }
 
+/// What the breakdown lists, and what its menus need to know.
+struct Rows<'a> {
+    /// Largest first.
+    totals: &'a [Total],
+    /// Each activity's category.
+    cats: &'a HashMap<&'a str, Option<&'a str>>,
+    /// Every category, for the "Move to" menu.
+    all_categories: &'a [String],
+    /// Whether to group under categories (there are some).
+    grouped: bool,
+}
+
 /// Time per activity, under its category when there are categories.
-/// Returns the filter for a row the user clicked.
+/// Clicking a row narrows to it (the filter is returned); right-clicking
+/// one opens its category menu.
 fn breakdown(
     ui: &mut Ui,
-    totals: &[Total],
-    cats: &HashMap<&str, Option<&str>>,
-    grouped: bool,
+    rows: &Rows,
     filter: &Filter,
+    actions: &mut Vec<Action>,
 ) -> Option<Filter> {
+    let totals = rows.totals;
     if totals.is_empty() {
         ui.weak("Nothing recorded.");
         return None;
     }
-    // Groups in order of time, activities within them likewise (`totals`
-    // comes largest first).
+    let category_of = |name: &str| rows.cats.get(name).copied().flatten();
+    // Groups in order of time, activities within them likewise.
     let mut groups: Vec<(Option<&str>, i64, Vec<&Total>)> = Vec::new();
     for t in totals {
-        let cat = if grouped {
-            cats.get(t.name.as_str()).copied().flatten()
+        let cat = if rows.grouped {
+            category_of(&t.name)
         } else {
             None
         };
@@ -662,16 +682,17 @@ fn breakdown(
         .spacing([14.0, 6.0])
         .show(ui, |ui| {
             for (cat, total, acts) in &groups {
-                if grouped {
+                if rows.grouped {
                     let f = Filter::Category(cat.map(str::to_string));
                     let name = RichText::new(f.label()).strong();
-                    if ui
+                    let resp = ui
                         .selectable_label(*filter == f, name)
-                        .on_hover_text(toggle_tip(filter, &f, "category"))
-                        .clicked()
-                    {
+                        .on_hover_text(toggle_tip(filter, &f, "category"));
+                    if resp.clicked() {
                         picked = Some(toggle(filter, f));
                     }
+                    let members = rows.cats.values().filter(|c| **c == *cat).count();
+                    categories::category_menu(&resp, *cat, members, actions);
                     ui.label("");
                     ui.label(RichText::new(fmt_hours(*total)).monospace().strong());
                     ui.weak(share(*total));
@@ -680,16 +701,22 @@ fn breakdown(
                 for t in acts {
                     let f = Filter::Activity(t.name.clone());
                     ui.horizontal(|ui| {
-                        if grouped {
+                        if rows.grouped {
                             ui.add_space(14.0);
                         }
-                        if ui
+                        let resp = ui
                             .selectable_label(*filter == f, t.name.as_str())
-                            .on_hover_text(toggle_tip(filter, &f, "activity"))
-                            .clicked()
-                        {
+                            .on_hover_text(toggle_tip(filter, &f, "activity"));
+                        if resp.clicked() {
                             picked = Some(toggle(filter, f.clone()));
                         }
+                        categories::activity_menu(
+                            &resp,
+                            &t.name,
+                            category_of(&t.name),
+                            rows.all_categories,
+                            actions,
+                        );
                     });
                     let (r, _) = ui.allocate_exact_size(egui::vec2(bar_w, 10.0), Sense::hover());
                     style::bar(ui, r, t.ms as f32 / max as f32, style::activity(&t.name));
@@ -772,7 +799,10 @@ mod tests {
             // Real frame times, so two quick clicks make a double click.
             .with_step_dt(1.0 / 60.0)
             .build_ui_state(
-                |ui, t: &mut Tab| show(ui, &mut t.view, &t.rail, &mut t.actions),
+                |ui, t: &mut Tab| {
+                    let cats = vec!["work".to_string()];
+                    show(ui, &mut t.view, &t.rail, &cats, &mut t.actions)
+                },
                 Tab {
                     view,
                     rail,
