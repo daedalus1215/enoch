@@ -9,9 +9,25 @@ anyhow = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
+# OpenGL (glow) renderer rather than eframe's default wgpu: it works on any
+# Mesa GL driver without a Vulkan ICD, and compiles far less.
+eframe = { version = "0.37", optional = true, default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
 ratatui = "0.29"
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [profile.release]
 lto = true
 strip = true
+
+[features]
+default = ["gui"]
+# Desktop window (`enoch gui`). Build without it for a lean CLI + TUI:
+# cargo build --no-default-features
+gui = ["dep:eframe"]

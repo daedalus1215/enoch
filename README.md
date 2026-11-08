@@ -1,7 +1,7 @@
 # enoch
 
 A small, local time tracker. Start and stop activities from the shell, then
-watch them live in a TUI — with month-by-month history, a 365-day heatmap,
+watch them live in a TUI or a desktop window — with month-by-month history, a 365-day heatmap,
 and per-activity / per-category views. One binary, one SQLite file, no
 server.
 
@@ -10,6 +10,9 @@ server.
 ```sh
 cargo build --release        # binary: target/release/enoch
 # or: cargo install --path .
+
+# CLI + TUI only, without the desktop window (no GUI dependencies):
+cargo build --release --no-default-features
 ```
 
 ## Quick start
@@ -33,6 +36,7 @@ enoch add NAME --from HH:MM [--to HH:MM] [--day D]    retroactive session
 enoch export [--from D] [--to D]                      sessions as CSV to stdout
 enoch cat new NAME | rename OLD NEW | move ACT CAT | rm NAME
 enoch tui                                             open the interactive panel
+enoch gui                                             open the desktop window
 ```
 
 - `D` is `YYYY-MM-DD`. `enoch add` defaults to today; `--to` defaults to
@@ -78,6 +82,21 @@ PROMPTS       tab complete · enter save · esc cancel
 ```
 
 `?` shows this screen inside the TUI; `esc` returns to live.
+
+## The GUI
+
+`enoch gui` opens a desktop window over the same database:
+
+- **Start box** — type an activity and press Enter. Existing activities
+  matching what you type appear as one-click buttons below it.
+- **Activities rail** — every activity grouped by category; ▶ starts it,
+  ■ stops it, running ones show a filled dot and their elapsed time.
+- **Running** — a live clock per running activity, with Stop / Stop all.
+- **Totals** — per-activity bars for today, this week, or all time.
+
+The window re-reads the database every second, so `enoch start` / `stop`
+from a shell shows up without a restart. On Wayland its app id is
+`enoch`, for window rules.
 
 ## Data
 

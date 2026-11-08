@@ -1,3 +1,5 @@
+#[cfg(feature = "gui")]
+mod gui;
 mod theme;
 mod tui;
 use anyhow::{Context, Result};
@@ -36,6 +38,9 @@ enum Cmd {
     Report,
     /// Open the interactive panel (default when no subcommand is given)
     Tui,
+    /// Open the desktop window
+    #[cfg(feature = "gui")]
+    Gui,
     /// Add a retroactive session (closed, explicit times)
     Add {
         /// Activity name (created if new)
@@ -108,6 +113,8 @@ fn run() -> Result<()> {
         Cmd::Export { from, to } => cmd_export(&db, &from, &to),
         Cmd::Cat { action } => cmd_cat(&db, action),
         Cmd::Tui => tui::run(),
+        #[cfg(feature = "gui")]
+        Cmd::Gui => gui::run(db),
     }
 }
 
