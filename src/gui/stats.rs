@@ -137,8 +137,8 @@ pub fn show(
         Filter::Activity(a) => n == a,
     };
     let base = match &filter {
-        Filter::Activity(a) => style::activity(a),
-        _ => HEAT,
+        Filter::Activity(a) => style::activity(ui, a),
+        _ => style::graphic(ui, HEAT),
     };
     let per_day = view.ledger.per_day(keep);
     let summary = stats::summarize(&per_day, today);
@@ -447,7 +447,7 @@ fn heatmap(
     if let Some(h) = hovered {
         outline(h, Stroke::new(1.0, text));
     }
-    outline(view.sel, Stroke::new(2.0, style::ACCENT));
+    outline(view.sel, Stroke::new(2.0, style::accent(ui)));
 
     let font = FontId::proportional(11.0);
     for (row, name) in [(0, "Mon"), (2, "Wed"), (4, "Fri")] {
@@ -549,7 +549,12 @@ fn selected_day(ui: &mut Ui, day: NaiveDate, totals: &[Total], actions: &mut Vec
             for t in totals {
                 ui.label(&t.name);
                 let (r, _) = ui.allocate_exact_size(egui::vec2(bar_w, 10.0), Sense::hover());
-                style::bar(ui, r, t.ms as f32 / max as f32, style::activity(&t.name));
+                style::bar(
+                    ui,
+                    r,
+                    t.ms as f32 / max as f32,
+                    style::activity(ui, &t.name),
+                );
                 ui.label(RichText::new(fmt_hours(t.ms)).monospace());
                 ui.end_row();
             }
@@ -719,7 +724,12 @@ fn breakdown(
                         );
                     });
                     let (r, _) = ui.allocate_exact_size(egui::vec2(bar_w, 10.0), Sense::hover());
-                    style::bar(ui, r, t.ms as f32 / max as f32, style::activity(&t.name));
+                    style::bar(
+                        ui,
+                        r,
+                        t.ms as f32 / max as f32,
+                        style::activity(ui, &t.name),
+                    );
                     ui.label(RichText::new(fmt_hours(t.ms)).monospace());
                     ui.weak(share(t.ms));
                     ui.end_row();
