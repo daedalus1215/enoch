@@ -156,7 +156,7 @@ pub fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>, actions: &mut Vec<
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui
-                        .button(RichText::new("Delete").color(super::style::ERROR))
+                        .button(RichText::new("Delete").color(super::style::error(ui)))
                         .clicked()
                     {
                         actions.push(Action::DeleteCategory(name.clone()));

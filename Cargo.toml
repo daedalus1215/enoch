@@ -26,7 +26,8 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"], optional = true }
 # Idle detection (ext-idle-notify-v1) and the notification offering to drop
-# time away. Both are already in the build through winit and ksni.
+# time away. Both are already in the build through winit and ksni. The
+# window uses zbus too, for the desktop's light or dark preference.
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"], optional = true }
@@ -77,8 +78,10 @@ strip = true
 [features]
 default = ["gui", "tray"]
 # Build without these for a lean CLI + TUI: cargo build --no-default-features
-# Desktop window (`enoch gui`).
-gui = ["dep:eframe", "dep:winit"]
+# Desktop window (`enoch gui`). It saves its theme with eframe's storage,
+# and on Linux asks the desktop portal for the system theme over D-Bus
+# (zbus is already in the build through AccessKit).
+gui = ["dep:eframe", "dep:winit", "dep:zbus", "eframe/persistence"]
 # Tray icon (`enoch tray`): StatusNotifierItem hosts (Waybar, KDE, ...) on
 # Linux, the menu bar on macOS.
 tray = [

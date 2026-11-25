@@ -152,6 +152,16 @@ until stopped.
 Sessions that run past midnight count on each day they touch, as in the
 Day tab.
 
+**Light or dark** — the three buttons at the top right pick the light
+theme, the dark one, or whichever the system uses (the default), and the
+window remembers the choice. On light, activity colors are drawn a little
+deeper so they stay readable. On Linux, "the system" is the desktop
+portal's color scheme setting (served by GNOME, KDE, and
+xdg-desktop-portal-gtk under Hyprland or Sway). The window follows it as
+it changes, and is dark if there is no portal. The choice is kept in
+`app.ron` next to the database (`~/Library/Application Support/enoch/` on
+macOS).
+
 The window re-reads the database every second, so `enoch start` / `stop`
 from a shell shows up without a restart. On Wayland its app id is
 `enoch`, for window rules.

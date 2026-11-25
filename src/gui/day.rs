@@ -242,6 +242,7 @@ fn timeline_area(
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals().clone();
     let weak = visuals.weak_text_color();
+    let now_color = style::error(ui);
     let lanes_top = rect.top() + HEAD_H;
 
     // Follow the pointer while dragging. On release, commit at the end of
@@ -276,7 +277,7 @@ fn timeline_area(
     // hour labels give way to it.
     let now_label = (range.0..=range.1).contains(&now).then(|| {
         let size = painter
-            .layout_no_wrap("now".into(), FontId::proportional(11.0), style::ERROR)
+            .layout_no_wrap("now".into(), FontId::proportional(11.0), now_color)
             .size();
         Align2::CENTER_TOP.anchor_size(Pos2::new(axis.x(now), rect.top() + 3.0), size)
     });
@@ -341,7 +342,7 @@ fn timeline_area(
     let preview = view.drag.as_ref().map(|d| d.preview(lim));
     for (i, name) in lanes.iter().enumerate() {
         let y0 = lanes_top + i as f32 * LANE_H;
-        let color = style::activity(name);
+        let color = style::activity(ui, name);
         if i % 2 == 0 {
             painter.rect_filled(
                 Rect::from_min_max(
@@ -516,13 +517,13 @@ fn timeline_area(
     // "Now" marker.
     if (range.0..=range.1).contains(&now) {
         let x = axis.x(now);
-        painter.vline(x, lanes_top..=rect.bottom(), Stroke::new(1.5, style::ERROR));
+        painter.vline(x, lanes_top..=rect.bottom(), Stroke::new(1.5, now_color));
         painter.text(
             Pos2::new(x, rect.top() + 3.0),
             Align2::CENTER_TOP,
             "now",
             FontId::proportional(11.0),
-            style::ERROR,
+            now_color,
         );
     }
 
