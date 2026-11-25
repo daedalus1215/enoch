@@ -4,18 +4,22 @@
 //!
 //! Reads the same SQLite file as the CLI and TUI and re-queries it every
 //! second, so `enoch start` in a shell shows up here without a restart.
+//!
+//! The theme is light, dark, or the system's, picked in the top bar and
+//! kept in eframe's storage (`app.ron`, next to the database on Linux).
 
 mod categories;
 mod day;
 mod stats;
 mod style;
+mod system_theme;
 mod timeline;
 
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use chrono::{Local, NaiveDate};
-use eframe::egui::{self, Align, Layout, RichText, Sense, Ui};
+use eframe::egui::{self, Align, Layout, RichText, Sense, ThemePreference, Ui};
 use enoch::db::{Db, Running, Scope, StartOutcome, Total};
 use enoch::timefmt::{
     date_of, day_bounds, fmt_clock, fmt_hm, fmt_range, fmt_short, now_ms, week_bounds,
@@ -24,6 +28,9 @@ use enoch::timefmt::{
 /// How long a status-bar message stays up.
 const FLASH_FOR: Duration = Duration::from_secs(6);
 
+/// Where the theme preference is kept in eframe's storage.
+const THEME_KEY: &str = "theme";
+
 pub fn run(db: Db) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -31,6 +38,8 @@ pub fn run(db: Db) -> Result<()> {
             .with_app_id("enoch")
             .with_inner_size([960.0, 640.0])
             .with_min_inner_size([560.0, 360.0]),
+        // Storage holds only the theme: no window geometry, no egui memory.
+        persist_window: false,
         // A regular app with a Dock icon and menu, even inside enoch.app,
         // whose Info.plist makes the menu bar item an agent (LSUIElement).
         #[cfg(target_os = "macos")]
@@ -45,7 +54,13 @@ pub fn run(db: Db) -> Result<()> {
         options,
         Box::new(move |cc| {
             style::apply(&cc.egui_ctx);
-            Ok(Box::new(App::new(db)))
+            let saved = cc.storage.and_then(|s| s.get_string(THEME_KEY));
+            if let Some(pref) = saved.as_deref().and_then(theme_named) {
+                cc.egui_ctx.set_theme(pref);
+            }
+            let mut app = App::new(db);
+            app.system_theme = Some(system_theme::SystemTheme::watch(&cc.egui_ctx));
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("gui: {e}"))
@@ -172,6 +187,20 @@ struct App {
     focus_start: bool,
     flash: Option<Flash>,
     dialog: Option<categories::Dialog>,
+    /// Where winit can't tell the system theme (Linux), what the desktop
+    /// portal says it is.
+    system_theme: Option<system_theme::SystemTheme>,
+}
+
+/// A theme preference by the name it is saved under.
+fn theme_named(name: &str) -> Option<ThemePreference> {
+    [
+        ThemePreference::System,
+        ThemePreference::Light,
+        ThemePreference::Dark,
+    ]
+    .into_iter()
+    .find(|p| p.name() == name)
 }
 
 impl App {
@@ -188,6 +217,7 @@ impl App {
             focus_start: true,
             flash: None,
             dialog: None,
+            system_theme: None,
         }
     }
 
@@ -339,7 +369,7 @@ impl App {
             match &self.flash {
                 Some(f) if f.at.elapsed() < FLASH_FOR => {
                     let color = if f.error {
-                        style::ERROR
+                        style::error(ui)
                     } else {
                         ui.visuals().text_color()
                     };
@@ -424,7 +454,17 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if let Some(theme) = self.system_theme.as_ref().and_then(|s| s.get()) {
+            raw.system_theme = Some(theme);
+        }
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.refresh_if_due();
         let now = now_ms();
         let mut actions = Vec::new();
@@ -432,7 +472,7 @@ impl eframe::App for App {
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("enoch").strong().color(style::ACCENT));
+                ui.label(RichText::new("enoch").strong().color(style::accent(ui)));
                 ui.add_space(12.0);
                 for (tab, label, key) in [
                     (Tab::Live, "Live", egui::Key::Num1),
@@ -452,6 +492,16 @@ impl eframe::App for App {
                         self.focus_start = tab == Tab::Live;
                     }
                 }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let mut pref = ui.ctx().options(|o| o.theme_preference);
+                    if style::theme_switch(ui, &mut pref) {
+                        ui.ctx().set_theme(pref);
+                        if let Some(s) = frame.storage_mut() {
+                            s.set_string(THEME_KEY, pref.name().to_string());
+                            s.flush();
+                        }
+                    }
+                });
             });
             ui.add_space(2.0);
         });
@@ -568,7 +618,8 @@ fn rail_row(
     actions: &mut Vec<Action>,
 ) {
     let started = snap.started_at(name);
-    let color = style::activity(name);
+    let color = style::activity(ui, name);
+    let ink = style::activity_ink(ui, name);
     // A fixed-height row: a bare right-to-left layout would claim all the
     // remaining height and center itself in it.
     let size = egui::vec2(ui.available_width(), 24.0);
@@ -578,7 +629,7 @@ fn rail_row(
                 if style::icon_button(ui, style::Icon::Stop, &format!("stop {name}")).clicked() {
                     actions.push(Action::Stop(vec![name.to_string()]));
                 }
-                ui.label(RichText::new(fmt_short(now - s)).monospace().color(color));
+                ui.label(RichText::new(fmt_short(now - s)).monospace().color(ink));
             }
             None => {
                 if style::icon_button(ui, style::Icon::Play, &format!("start {name}")).clicked() {
@@ -609,7 +660,7 @@ fn running(ui: &mut Ui, snap: &Snapshot, now: i64, actions: &mut Vec<Action>) {
         return;
     }
     for r in &snap.running {
-        let color = style::activity(&r.name);
+        let color = style::activity(ui, &r.name);
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -678,7 +729,12 @@ fn totals(ui: &mut Ui, snap: &Snapshot, period: Period, actions: &mut Vec<Action
             for t in &snap.totals {
                 ui.label(&t.name);
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(bar_w, 10.0), Sense::hover());
-                style::bar(ui, rect, t.ms as f32 / max as f32, style::activity(&t.name));
+                style::bar(
+                    ui,
+                    rect,
+                    t.ms as f32 / max as f32,
+                    style::activity(ui, &t.name),
+                );
                 resp.on_hover_text(format!(
                     "{:.0}% of {}",
                     100.0 * t.ms as f64 / sum.max(1) as f64,
@@ -709,6 +765,18 @@ mod tests {
         db.create_category("empty").unwrap();
         db.set_activity_category("coding", Some("work")).unwrap();
         db
+    }
+
+    #[test]
+    fn theme_names_round_trip() {
+        for p in [
+            ThemePreference::System,
+            ThemePreference::Light,
+            ThemePreference::Dark,
+        ] {
+            assert_eq!(theme_named(p.name()), Some(p));
+        }
+        assert_eq!(theme_named("solarized"), None);
     }
 
     #[test]
