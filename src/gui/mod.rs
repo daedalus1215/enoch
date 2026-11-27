@@ -122,6 +122,50 @@ impl Snapshot {
             .find(|r| r.name.eq_ignore_ascii_case(name))
             .map(|r| r.started_at)
     }
+
+    /// Up to eight activities whose names contain `typed`, ignoring case.
+    fn matching(&self, typed: &str) -> Vec<&String> {
+        let q = typed.trim().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        self.rail
+            .iter()
+            .map(|(n, _)| n)
+            .filter(|n| n.to_lowercase().contains(&q))
+            .take(8)
+            .collect()
+    }
+
+    /// The matches for `typed` that can be started: those not running.
+    fn pickable(&self, typed: &str) -> Vec<String> {
+        self.matching(typed)
+            .into_iter()
+            .filter(|n| self.started_at(n).is_none())
+            .cloned()
+            .collect()
+    }
+}
+
+/// The pick `steps` on from `pick` (backwards when negative), going round
+/// the typed text (`None`) and then each of `names`.
+fn step_pick(names: &[String], pick: Option<&str>, steps: isize) -> Option<String> {
+    let at = pick
+        .and_then(|p| names.iter().position(|n| n == p))
+        .map_or(0, |i| i + 1);
+    let to = (at as isize + steps).rem_euclid(names.len() as isize + 1) as usize;
+    to.checked_sub(1).map(|i| names[i].clone())
+}
+
+/// Presses of `key` with exactly `modifiers` held, taken out of the input
+/// so no widget sees them.
+fn take_presses(input: &mut egui::InputState, key: egui::Key, modifiers: egui::Modifiers) -> isize {
+    let before = input.events.len();
+    input.events.retain(|e| {
+        !matches!(e, egui::Event::Key { key: k, pressed: true, modifiers: m, .. }
+            if *k == key && m.matches_exact(modifiers))
+    });
+    (before - input.events.len()) as isize
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -184,6 +228,9 @@ struct App {
     /// When `snap` was loaded; `None` forces a reload next frame.
     loaded_at: Option<Instant>,
     start_text: String,
+    /// The match under the start field picked with Tab, which Enter starts
+    /// instead of the typed text.
+    start_pick: Option<String>,
     focus_start: bool,
     flash: Option<Flash>,
     dialog: Option<categories::Dialog>,
@@ -214,6 +261,7 @@ impl App {
             snap: Snapshot::default(),
             loaded_at: None,
             start_text: String::new(),
+            start_pick: None,
             focus_start: true,
             flash: None,
             dialog: None,
@@ -378,7 +426,7 @@ impl App {
                 _ => {
                     ui.weak(match self.tab {
                         Tab::Live => {
-                            "type an activity and press Enter to start it · right-click an activity or category to organize"
+                            "type an activity and press Enter to start it · Tab picks a match · right-click an activity or category to organize"
                         }
                         Tab::Day => "Left / Right: previous / next day · T: today",
                         Tab::Stats => {
@@ -400,16 +448,47 @@ impl App {
 
     fn start_box(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         style::section(ui, "START");
+        let id = egui::Id::unique("start_text");
+
+        // Tab and Shift+Tab (or Down and Up) move a highlight round the
+        // matches under the field, and Enter starts the highlighted one.
+        // Focus stays in the field, so typing goes on refining the matches.
+        // The keys are taken before the field can see them.
+        let pickable = self.snap.pickable(&self.start_text);
+        if self
+            .start_pick
+            .as_ref()
+            .is_some_and(|p| !pickable.contains(p))
+        {
+            self.start_pick = None;
+        }
+        if !pickable.is_empty() && ui.memory(|m| m.has_focus(id)) {
+            let steps = ui.input_mut(|i| {
+                use egui::{Key, Modifiers};
+                take_presses(i, Key::Tab, Modifiers::NONE)
+                    + take_presses(i, Key::ArrowDown, Modifiers::NONE)
+                    - take_presses(i, Key::Tab, Modifiers::SHIFT)
+                    - take_presses(i, Key::ArrowUp, Modifiers::NONE)
+            });
+            if steps != 0 {
+                self.start_pick = step_pick(&pickable, self.start_pick.as_deref(), steps);
+            }
+        }
+
         ui.horizontal(|ui| {
             let width = (ui.available_width() - 90.0).max(160.0);
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.start_text)
-                    .hint_text("what are you doing?")
-                    .desired_width(width),
-            );
+            let edit = egui::TextEdit::singleline(&mut self.start_text)
+                .id(id)
+                .hint_text("what are you doing?")
+                .desired_width(width);
+            let filter = edit.get_event_filter();
+            let resp = ui.add(edit);
             if self.focus_start {
                 resp.request_focus();
                 self.focus_start = false;
+            }
+            if resp.changed() {
+                self.start_pick = None;
             }
             let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let can_start = !self.start_text.trim().is_empty();
@@ -417,24 +496,27 @@ impl App {
                 .add_enabled(can_start, egui::Button::new("Start"))
                 .clicked();
             if (entered || clicked) && can_start {
-                actions.push(Action::Start(std::mem::take(&mut self.start_text)));
+                let typed = std::mem::take(&mut self.start_text);
+                actions.push(Action::Start(self.start_pick.take().unwrap_or(typed)));
                 self.focus_start = true;
             }
+            if !resp.has_focus() {
+                self.start_pick = None;
+            }
+            // While there are matches to pick, keep Tab from moving focus
+            // on to the Start button. egui reads this at the start of the
+            // next frame, so it follows what was typed in this one.
+            let tab = !self.snap.pickable(&self.start_text).is_empty();
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(id, egui::EventFilter { tab, ..filter })
+            });
         });
 
         // Existing activities matching what is typed, as one-click starts.
-        let q = self.start_text.trim().to_lowercase();
-        if q.is_empty() {
+        if self.start_text.trim().is_empty() {
             return;
         }
-        let matches: Vec<&String> = self
-            .snap
-            .rail
-            .iter()
-            .map(|(n, _)| n)
-            .filter(|n| n.to_lowercase().contains(&q))
-            .take(8)
-            .collect();
+        let matches = self.snap.matching(&self.start_text);
         if matches.is_empty() {
             ui.weak("new activity");
             return;
@@ -442,10 +524,12 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             for name in matches {
                 let running = self.snap.started_at(name).is_some();
-                let resp = ui.add_enabled(!running, egui::Button::new(name.as_str()));
-                if resp.clicked() {
+                let picked = self.start_pick.as_ref() == Some(name);
+                let button = egui::Button::new(name.as_str()).selected(picked);
+                if ui.add_enabled(!running, button).clicked() {
                     actions.push(Action::Start(name.clone()));
                     self.start_text.clear();
+                    self.start_pick = None;
                     self.focus_start = true;
                 }
             }
@@ -813,6 +897,125 @@ mod tests {
         });
         assert!(app.flash.as_ref().is_some_and(|f| f.error));
         assert_eq!(app.db.activity_index().unwrap()[0], ("guitar".to_string(), None));
+    }
+
+    #[test]
+    fn picks_go_round_the_typed_text_and_the_matches() {
+        let names = ["a".to_string(), "b".to_string()];
+        assert_eq!(step_pick(&names, None, 1).as_deref(), Some("a"));
+        assert_eq!(step_pick(&names, Some("a"), 1).as_deref(), Some("b"));
+        assert_eq!(step_pick(&names, Some("b"), 1), None);
+        assert_eq!(step_pick(&names, None, -1).as_deref(), Some("b"));
+        assert_eq!(step_pick(&names, Some("a"), -1), None);
+        assert_eq!(step_pick(&names, None, 5).as_deref(), Some("b"));
+        // A pick no longer among the matches counts as the typed text.
+        assert_eq!(step_pick(&names, Some("gone"), 1).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn running_activities_cannot_be_picked() {
+        let db = db();
+        db.start("coding").unwrap();
+        let snap = Snapshot::load(&db, Period::Today).unwrap();
+        assert_eq!(snap.matching("I").len(), 2);
+        assert_eq!(snap.pickable("I"), vec!["guitar"]);
+        assert!(snap.matching("  ").is_empty());
+    }
+
+    struct Start {
+        app: App,
+        actions: Vec<Action>,
+    }
+
+    /// The start box, with "i" typed: both activities match.
+    fn start_harness() -> Harness<'static, Start> {
+        let mut app = App::new(db());
+        app.refresh_if_due();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(600.0, 200.0))
+            .build_ui_state(
+                |ui, s: &mut Start| s.app.start_box(ui, &mut s.actions),
+                Start {
+                    app,
+                    actions: Vec::new(),
+                },
+            );
+        h.run();
+        h.get_by_role(egui::Role::TextInput).type_text("i");
+        h.run();
+        h
+    }
+
+    fn started<'a>(h: &'a Harness<'_, Start>) -> Vec<&'a str> {
+        h.state()
+            .actions
+            .iter()
+            .map(|a| match a {
+                Action::Start(n) => n.as_str(),
+                _ => panic!("not a start"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tab_picks_a_match_and_enter_starts_it() {
+        let mut h = start_harness();
+        let names = h.state().app.snap.pickable("i");
+        assert_eq!(names.len(), 2);
+
+        h.key_press(egui::Key::Tab);
+        h.run();
+        assert_eq!(h.state().app.start_pick.as_ref(), Some(&names[0]));
+        // Focus stayed in the field, rather than moving on to Start.
+        assert!(h.get_by_role(egui::Role::TextInput).is_focused());
+
+        h.key_press(egui::Key::Tab);
+        h.run();
+        assert_eq!(h.state().app.start_pick.as_ref(), Some(&names[1]));
+
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(started(&h), [names[1].as_str()]);
+        assert_eq!(h.state().app.start_text, "");
+        assert_eq!(h.state().app.start_pick, None);
+        assert!(h.get_by_role(egui::Role::TextInput).is_focused());
+    }
+
+    #[test]
+    fn going_round_the_matches_comes_back_to_the_typed_text() {
+        let mut h = start_harness();
+        let names = h.state().app.snap.pickable("i");
+
+        h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Tab);
+        h.run();
+        assert_eq!(h.state().app.start_pick.as_ref(), names.last());
+
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+        assert_eq!(h.state().app.start_pick, None);
+
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(started(&h), ["i"]);
+    }
+
+    #[test]
+    fn typing_drops_the_pick() {
+        let mut h = start_harness();
+        h.key_press(egui::Key::Tab);
+        h.run();
+        assert!(h.state().app.start_pick.is_some());
+
+        h.get_by_role(egui::Role::TextInput).type_text("t");
+        h.run();
+        assert_eq!(h.state().app.start_pick, None);
+
+        // "it" matches only guitar; Tab picks it.
+        h.key_press(egui::Key::Tab);
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(started(&h), ["guitar"]);
     }
 
     struct Rail {
